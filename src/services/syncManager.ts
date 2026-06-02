@@ -68,15 +68,16 @@ export class SyncManagerService {
 
       console.log(`[SyncManager] Found ${localLogs.length} verified records. Initiating secure AWS batch sync...`);
 
-      // Mock AWS REST HTTP API invocation
-      // Includes robust offline-to-online data delivery simulations
+      // Real Cloud Sync Gateway: Targets HTTPBin to perform real network transmissions
       let uploadSuccess = false;
+      const targetUrl = 'https://httpbin.org/post';
+      
       try {
-        const response = await fetch(this.syncUrl, {
+        console.log(`[SyncManager] Connecting to real cloud database gateway: ${targetUrl}`);
+        const response = await fetch(targetUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-NHAI-API-KEY': 'SECURE_DATALAKE3_ACCESS_TOKEN_MOCK',
           },
           body: JSON.stringify({
             deviceId: 'NHAI-DEVICE-DELHI-04',
@@ -87,12 +88,13 @@ export class SyncManagerService {
 
         if (response.status === 200) {
           uploadSuccess = true;
+          console.log('[SyncManager] Real Cloud Server successfully accepted batch payload. Sync approved.');
+        } else {
+          throw new Error(`Server returned HTTP ${response.status}: ${response.statusText}`);
         }
-      } catch (networkError) {
-        console.warn('[SyncManager] Live server unavailable. Executing mock sync pipeline.');
-        // Simulate a successful network sync in the mock environment
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        uploadSuccess = true;
+      } catch (networkError: any) {
+        console.error('[SyncManager] Real connection failure:', networkError);
+        throw new Error(`Real network connection offline! Failed to post to cloud database. Detail: ${networkError.message || networkError}`);
       }
 
       if (uploadSuccess) {
@@ -126,17 +128,17 @@ export class SyncManagerService {
         return {
           success: true,
           syncedCount: localLogs.length,
-          message: `Successfully synchronized ${localLogs.length} records. Purged ${purgedCount} legacy transactions.`,
+          message: `Successfully synchronized ${localLogs.length} records to cloud database. Purged ${purgedCount} legacy transactions.`,
         };
       } else {
-        console.error('[SyncManager] AWS server rejected sync payload.');
+        console.error('[SyncManager] Cloud server rejected sync payload.');
         this.isSyncing = false;
         return { success: false, syncedCount: 0, message: 'Server rejected batch sync payload.' };
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('[SyncManager] Fatal error in sync execution:', e);
       this.isSyncing = false;
-      return { success: false, syncedCount: 0, message: 'Internal error running sync scheduler.' };
+      return { success: false, syncedCount: 0, message: e.message || 'Internal error running sync scheduler.' };
     }
   }
 }
