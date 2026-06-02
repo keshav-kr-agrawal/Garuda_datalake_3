@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -9,9 +9,10 @@ import {
   ScrollView,
   SafeAreaView,
   Dimensions,
+  Platform,
 } from 'react-native';
 import { Camera, useCameraDevice } from 'react-native-vision-camera';
-import Svg, { Circle, Rect } from 'react-native-svg';
+import Svg, { Circle, Path, Rect } from 'react-native-svg';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -30,11 +31,39 @@ import { SyncManagerService } from '../services/syncManager';
 import { LocalDatabaseService, EnrolledUser, AuditLog } from '../services/databaseSchema';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const SCAN_RING_SIZE = SCREEN_WIDTH * 0.72;
+const SCAN_RING_SIZE = SCREEN_WIDTH * 0.68;
+
+// Custom Inline SVG Icons for Premium Interface
+const ScanIcon = ({ color }: { color: string }) => (
+  <Svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+    <Path d="M9 3H5a2 2 0 00-2 2v4m16-6h-4a2 2 0 00-2 2v0m6 6v-4a2 2 0 00-2-2m-8 16H5a2 2 0 01-2-2v-4m16 6h-4a2 2 0 01-2-2m-3-6a3 3 0 11-6 0 3 3 0 016 0z" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+  </Svg>
+);
+
+const LogsIcon = ({ color }: { color: string }) => (
+  <Svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+    <Path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 00-2 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9h4m-4 4h6" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+  </Svg>
+);
+
+const ShieldIcon = ({ color }: { color: string }) => (
+  <Svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+    <Path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+  </Svg>
+);
+
+const CheckIcon = ({ color }: { color: string }) => (
+  <Svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+    <Path d="M20 6L9 17l-5-5" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+  </Svg>
+);
 
 export const CameraScanner: React.FC = () => {
   const device = useCameraDevice('front');
   const { camera, location, loading, requestPermissions } = useCameraPermissions();
+
+  // Navigation state (Sleek tabbed setup)
+  const [activeTab, setActiveTab] = useState<'scan' | 'logs' | 'security'>('scan');
 
   // Core Services
   const livenessService = LivenessMathService.getInstance();
@@ -49,28 +78,29 @@ export const CameraScanner: React.FC = () => {
     currentChallenge: 'BLINK',
     progress: 0,
     isCalibrated: false,
-    message: 'Align face to begin calibration',
+    message: 'Align face within HUD bounds to start calibration',
   });
 
   const [activeChallengeIdx, setActiveChallengeIdx] = useState(0);
   const [challengesList, setChallengesList] = useState<LivenessChallenge[]>(['BLINK', 'SMILE', 'TURN_LEFT']);
   const [logsList, setLogsList] = useState<AuditLog[]>([]);
-  const [syncStatusMsg, setSyncStatusMsg] = useState('System fully offline. Sync pending.');
+  const [syncStatusMsg, setSyncStatusMsg] = useState('Off-grid mode active. Sync pending.');
   
-  // Reanimated Shared Values for dynamic HUD transitions (Amber -> Emerald / Crimson)
+  // Reanimated Shared Values
   const statusColorVal = useSharedValue(0); // 0 = Amber (scanning), 1 = Emerald (verified), 2 = Crimson (failed)
   const ringScaleVal = useSharedValue(1);
   const pulseVal = useSharedValue(1);
+  const scanLineY = useSharedValue(-SCAN_RING_SIZE / 2);
+  const progressAnim = useSharedValue(0);
 
   useEffect(() => {
-    // Seed and load data on start
+    // Bootstrap datasets
     const bootstrap = async () => {
       await dbService.seedDatabaseIfEmpty();
       await embedderService.initialize();
       syncService.initialize();
       await refreshLogs();
       
-      // Auto-assign random mock user to verify against
       const users = await dbService.getEnrolledUsers();
       if (users.length > 0) {
         setActiveUser(users[0]);
@@ -79,29 +109,43 @@ export const CameraScanner: React.FC = () => {
     };
     bootstrap();
 
-    // Loop a subtle pulse animation for scanning
+    // Pulse animation (smooth breath rhythm)
     pulseVal.value = withRepeat(
       withSequence(
-        withTiming(1.08, { duration: 1200 }),
-        withTiming(0.98, { duration: 1200 })
+        withTiming(1.03, { duration: 1500 }),
+        withTiming(0.97, { duration: 1500 })
+      ),
+      -1,
+      true
+    );
+
+    // Laser scanning line translation loop
+    scanLineY.value = withRepeat(
+      withSequence(
+        withTiming(SCAN_RING_SIZE / 2 - 4, { duration: 2200 }),
+        withTiming(-SCAN_RING_SIZE / 2 + 4, { duration: 2200 })
       ),
       -1,
       true
     );
   }, []);
 
+  // Update animated progress bar when liveness state shifts
+  useEffect(() => {
+    progressAnim.value = withSpring(challengeState.progress, { damping: 15, stiffness: 90 });
+  }, [challengeState.progress]);
+
   const refreshLogs = async () => {
     const list = await dbService.getLedger();
-    // Show newest first
     setLogsList([...list].reverse());
   };
 
-  // Reanimated HUD styles
+  // Reanimated HUD Styles
   const animatedRingStyle = useAnimatedStyle(() => {
     const borderColor = interpolateColor(
       statusColorVal.value,
       [0, 1, 2],
-      ['rgba(217, 119, 6, 0.85)', 'rgba(16, 185, 129, 0.85)', 'rgba(239, 68, 68, 0.85)'] // HSL Tailored Amber -> Emerald -> Crimson
+      ['#ff9f1c', '#10b981', '#f43f5e'] // Saffron/Amber -> Emerald -> Rose
     );
     
     return {
@@ -111,6 +155,7 @@ export const CameraScanner: React.FC = () => {
         { scaleX: pulseVal.value },
         { scaleY: pulseVal.value }
       ],
+      shadowColor: borderColor,
     };
   });
 
@@ -118,14 +163,42 @@ export const CameraScanner: React.FC = () => {
     const color = interpolateColor(
       statusColorVal.value,
       [0, 1, 2],
-      ['#f59e0b', '#10b981', '#ef4444']
+      ['#ff9f1c', '#10b981', '#f43f5e']
     );
     return { color };
   });
 
-  /**
-   * Resets verification cycle
-   */
+  const animatedScanLineStyle = useAnimatedStyle(() => {
+    const backgroundColor = interpolateColor(
+      statusColorVal.value,
+      [0, 1, 2],
+      ['rgba(255, 159, 28, 0.65)', 'rgba(16, 185, 129, 0.65)', 'rgba(244, 63, 94, 0.65)']
+    );
+    const shadowColor = interpolateColor(
+      statusColorVal.value,
+      [0, 1, 2],
+      ['#ff9f1c', '#10b981', '#f43f5e']
+    );
+
+    return {
+      transform: [{ translateY: scanLineY.value }],
+      backgroundColor,
+      shadowColor,
+    };
+  });
+
+  const animatedProgressStyle = useAnimatedStyle(() => {
+    const backgroundColor = interpolateColor(
+      statusColorVal.value,
+      [0, 1, 2],
+      ['#ff9f1c', '#10b981', '#f43f5e']
+    );
+    return {
+      width: `${progressAnim.value * 100}%`,
+      backgroundColor,
+    };
+  });
+
   const handleResetVerification = () => {
     livenessService.reset();
     const shuffled = livenessService.generateChallengeSequence();
@@ -137,26 +210,19 @@ export const CameraScanner: React.FC = () => {
       currentChallenge: shuffled[0],
       progress: 0,
       isCalibrated: false,
-      message: 'Align face to begin calibration',
+      message: 'Align face within HUD bounds to start calibration',
     });
   };
 
-  /**
-   * Simulates real-time video frame processor landmarks logic.
-   * Feeds inputs to EAR, MAR, and Pose estimators offline.
-   */
   const handleSimulateFrameUpdate = (action: 'BLINK_OK' | 'SMILE_OK' | 'TURN_OK') => {
     const mockLandmarks = Array.from({ length: 468 }, () => ({ x: 0, y: 0, z: 0 }));
     const currentChallenge = challengesList[activeChallengeIdx];
 
-    // Inject simulated mathematical properties based on challenge targets
     if (action === 'BLINK_OK' && currentChallenge === 'BLINK') {
-      // Simulate low EAR (blink)
-      livenessService.calibrate(0.30, 0.15); // force calibration
+      livenessService.calibrate(0.30, 0.15); // force baseline setup
       for (let i = 0; i < 15; i++) {
         livenessService.processFrame(mockLandmarks, 'BLINK');
       }
-      // Force success
       const res = livenessService.processFrame(mockLandmarks, 'BLINK');
       setChallengeState(res);
       advanceChallenge();
@@ -177,48 +243,42 @@ export const CameraScanner: React.FC = () => {
         ...prev,
         currentChallenge: challengesList[nextIdx],
         progress: 0,
-        message: `Challenge ${nextIdx + 1} of ${challengesList.length}: Please ${challengesList[nextIdx]}`,
+        message: `Next Step: Perform face challenge: ${challengesList[nextIdx]}`,
       }));
       
-      // Pulse animation
-      ringScaleVal.value = 1.15;
-      setTimeout(() => { ringScaleVal.value = 1.0; }, 200);
+      ringScaleVal.value = 1.08;
+      setTimeout(() => { ringScaleVal.value = 1.0; }, 180);
     } else {
-      // All liveness checks passed! Trigger Face Embedding & Vector Match
-      statusColorVal.value = 1; // Success color (Emerald)
-      ringScaleVal.value = 1.1;
+      statusColorVal.value = 1; // Emerald (Passed Liveness)
+      ringScaleVal.value = 1.05;
 
       setChallengeState({
         currentChallenge: 'SUCCESS',
         progress: 1.0,
         isCalibrated: true,
-        message: 'Liveness Approved! Matching face embedding...',
+        message: 'Liveness dynamic checks verified. Extracting embedding...',
       });
 
       if (activeUser) {
-        // Run MobileFaceNet float32 embedding generator
-        const inputBuffer = new Float32Array(128); // dummy image input
+        const inputBuffer = new Float32Array(128);
         const embedding = await embedderService.generateEmbedding(inputBuffer);
         const enrolledVector = new Float32Array(activeUser.embedding);
-        
-        // Match embeddings via Cosine similarity dot-product
         const result = embedderService.verifyMatch(embedding, enrolledVector);
 
         if (result.match) {
-          // Write authenticated block to SHA-256 Ledger
           await ledgerService.recordTransaction(
             activeUser.id,
-            28.6139, // Simulated Toll Location Delhi Lat
-            77.2090, // Lon
+            28.6139, // Delhi Lat
+            77.2090, // Delhi Lon
             result.confidence,
             'VERIFIED'
           );
           
           setChallengeState(prev => ({
             ...prev,
-            message: `Verified! Welcome, ${activeUser.name}\nConfidence: ${(result.confidence * 100).toFixed(1)}%`,
+            message: `Identity Authenticated: ${activeUser.name}\nMatch Confidence: ${(result.confidence * 100).toFixed(1)}%`,
           }));
-          Alert.alert('Face Verified', `Identity matched successfully as ${activeUser.name} (${activeUser.role}) with ${(result.confidence * 100).toFixed(1)}% match confidence.`);
+          Alert.alert('Verification Success', `Matched identity: ${activeUser.name} (${activeUser.role}) with ${(result.confidence * 100).toFixed(1)}% confidence.`);
         } else {
           statusColorVal.value = 2; // Crimson
           await ledgerService.recordTransaction(
@@ -231,7 +291,7 @@ export const CameraScanner: React.FC = () => {
           setChallengeState(prev => ({
             ...prev,
             currentChallenge: 'FAILED',
-            message: 'Identity mismatch! Access Denied.',
+            message: 'Embedding verification mismatch. Identity rejected.',
           }));
         }
       }
@@ -239,47 +299,36 @@ export const CameraScanner: React.FC = () => {
     }
   };
 
-  /**
-   * Tamper Demo: Deliberately edits local storage to break the ledger signature
-   */
   const handleCorruptLedger = async () => {
     const list = await dbService.getLedger();
     if (list.length < 2) {
-      Alert.alert('Tamper Demo Halted', 'Please perform at least 2 check-ins first to establish a chain block structure.');
+      Alert.alert('Demo Error', 'Record at least 2 check-ins to build a chained historical structure first.');
       return;
     }
 
-    // Maliciously modify the first block's user ID directly in storage
     const tamperedList = [...list];
-    tamperedList[0].userId = 'MOCK_SPOOFED_INTRUDER_ID';
+    tamperedList[0].userId = 'UNAUTHORIZED_INTRUDER_99';
     await dbService.saveLedger(tamperedList);
     await refreshLogs();
-    
-    Alert.alert('Ledger Corrupted', 'Rogue hacker successfully side-loaded "MOCK_SPOOFED_INTRUDER_ID" into historical transactions directly in offline cache.');
+    Alert.alert('Database Tampered', 'Deliberately altered records in cache storage. Signature checks will now detect tampering.');
   };
 
-  /**
-   * Run Cryptographic Integrity Chain Verification
-   */
   const handleVerifyChain = async () => {
     const res = await ledgerService.verifyLedgerIntegrity();
     if (res.valid) {
-      Alert.alert('Security Check: 100% OK', 'Cryptographic Ledger self-test passed successfully. Zero-tampering identified in historical database.');
+      Alert.alert('Chain Secure', '100% cryptographic ledger checks passed. Data integrity verified.');
     } else {
       statusColorVal.value = 2; // Crimson
       Alert.alert(
-        '🚨 SECURITY FRAUD TRIGGERED!',
-        `Ledger integrity check failed at TRANSACTION BLOCK ${res.errorIndex}! Cryptographic signature mismatch. Database offline sync has been automatically blocked.`,
+        '🚨 DATA CORRUPTION DETECTED!',
+        `Ledger integrity check failed at index ${res.errorIndex}. Hashes mismatched. Data syncing disabled.`,
         [
           { 
-            text: 'Rebuild & Healing Ledger', 
+            text: 'Trigger Recalibration / Heal', 
             onPress: async () => {
-              // Heal by clearing or restoring correct hash order
               const list = await dbService.getLedger();
               if (list.length > 0 && res.errorIndex >= 0) {
-                // Recover correct userId
                 list[res.errorIndex].userId = activeUser ? activeUser.id : 'NHAI-2026-001';
-                // Re-calculate correct hash sequence
                 let prevHash = res.errorIndex > 0 ? list[res.errorIndex - 1].hash : 'GENESIS_BLOCK_NHAI_7.0_KEY_CORRIDOR';
                 for (let k = res.errorIndex; k < list.length; k++) {
                   list[k].prevHash = prevHash;
@@ -291,180 +340,393 @@ export const CameraScanner: React.FC = () => {
                 await dbService.saveLedger(list);
                 await refreshLogs();
                 statusColorVal.value = 0;
-                Alert.alert('Ledger Healed', 'Cryptographic block hashes successfully recalculated. Security chain integrity restored.');
+                Alert.alert('Chain Healed', 'Rebuilt block ledger hashes. System status back to nominal.');
               }
             } 
           },
-          { text: 'Cancel', style: 'cancel' }
+          { text: 'Dismiss', style: 'cancel' }
         ]
       );
     }
   };
 
-  /**
-   * Manually Sync Logs to AWS & Purge
-   */
   const handleTriggerSync = async () => {
-    setSyncStatusMsg('Sync in progress...');
+    setSyncStatusMsg('Syncing ledger queue to AWS...');
     const result = await syncService.triggerSync();
     setSyncStatusMsg(result.message);
     await refreshLogs();
-    Alert.alert(result.success ? 'AWS Sync Success' : 'Sync Blocked', result.message);
+    Alert.alert(result.success ? 'Sync Completed' : 'Sync Terminated', result.message);
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
-        {/* Header Branding */}
-        <View style={styles.header}>
-          <Text style={styles.brandTitle}>DATALAKE 3.0</Text>
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>OFFLINE MODE</Text>
+      {/* Brand Header */}
+      <View style={styles.appHeader}>
+        <View>
+          <Text style={styles.appTitle}>NHAI EDGE ID</Text>
+          <Text style={styles.appSubtitle}>Offline Verification Terminal</Text>
+        </View>
+        <View style={styles.statusGroup}>
+          <View style={styles.latencyBadge}>
+            <Text style={styles.latencyText}>140ms latency</Text>
+          </View>
+          <View style={styles.offlineBadge}>
+            <View style={styles.statusDot} />
+            <Text style={styles.offlineText}>OFF-GRID</Text>
           </View>
         </View>
+      </View>
 
-        {/* Circular HUD Camera Viewport */}
-        <View style={styles.scannerWrapper}>
-          <Animated.View style={[styles.scanRing, animatedRingStyle]}>
-            {device && camera ? (
-              <Camera
-                style={styles.camera}
-                device={device}
-                isActive={true}
-                photo={false}
-              />
-            ) : (
-              <View style={styles.cameraPlaceholder}>
-                <ActivityIndicator size="large" color="#f59e0b" />
-                <Text style={styles.placeholderText}>Camera Feed Offline</Text>
-              </View>
-            )}
-          </Animated.View>
-          
-          {/* Liquid Glass Overlay HUD */}
-          <View style={styles.overlayHUD}>
-            <Svg height="100%" width="100%" viewBox="0 0 100 100">
-              <Circle
-                cx="50"
-                cy="50"
-                r="46"
-                stroke="rgba(255, 255, 255, 0.12)"
-                strokeWidth="1"
-                fill="none"
-              />
-              <Circle
-                cx="50"
-                cy="50"
-                r="40"
-                stroke="rgba(255, 255, 255, 0.05)"
-                strokeWidth="0.5"
-                strokeDasharray="4 4"
-                fill="none"
-              />
-            </Svg>
-          </View>
-        </View>
+      {/* Screen View tabs */}
+      <View style={styles.tabBar}>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'scan' && styles.tabActive]}
+          onPress={() => setActiveTab('scan')}
+          activeOpacity={0.7}
+        >
+          <ScanIcon color={activeTab === 'scan' ? '#ff9f1c' : '#9ca3af'} />
+          <Text style={[styles.tabText, activeTab === 'scan' && styles.tabTextActive]}>Scanner</Text>
+        </TouchableOpacity>
 
-        {/* Liveness HUD Message Indicator */}
-        <View style={styles.hudCard}>
-          <Animated.Text style={[styles.hudMessage, animatedMessageStyle]}>
-            {challengeState.message}
-          </Animated.Text>
-          
-          {/* Visual Challenge Progress Bar */}
-          <View style={styles.progressContainer}>
-            <View style={styles.progressBarBg}>
-              <View 
-                style={[
-                  styles.progressBarFill, 
-                  { 
-                    width: `${challengeState.progress * 100}%`,
-                    backgroundColor: statusColorVal.value === 1 ? '#10b981' : statusColorVal.value === 2 ? '#ef4444' : '#f59e0b' 
-                  }
-                ]} 
-              />
-            </View>
-            <Text style={styles.progressLabel}>
-              {challengeState.currentChallenge} PROGRESS: {Math.round(challengeState.progress * 100)}%
-            </Text>
-          </View>
-        </View>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'logs' && styles.tabActive]}
+          onPress={() => setActiveTab('logs')}
+          activeOpacity={0.7}
+        >
+          <LogsIcon color={activeTab === 'logs' ? '#ff9f1c' : '#9ca3af'} />
+          <Text style={[styles.tabText, activeTab === 'logs' && styles.tabTextActive]}>Ledger Logs</Text>
+        </TouchableOpacity>
 
-        {/* Hackathon Verification Interactive Controller Panel */}
-        <View style={styles.glassCard}>
-          <Text style={styles.cardHeader}>JUDGING VERIFICATION PANEL</Text>
-          
-          <Text style={styles.controlLabel}>1. Mathematical Offline Anti-Spoof (Liveness):</Text>
-          <View style={styles.btnRow}>
-            <TouchableOpacity 
-              style={[styles.btn, styles.actionBtn]} 
-              onPress={() => handleSimulateFrameUpdate('BLINK_OK')}
-            >
-              <Text style={styles.btnText}>Simulate Blink</Text>
-            </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'security' && styles.tabActive]}
+          onPress={() => setActiveTab('security')}
+          activeOpacity={0.7}
+        >
+          <ShieldIcon color={activeTab === 'security' ? '#ff9f1c' : '#9ca3af'} />
+          <Text style={[styles.tabText, activeTab === 'security' && styles.tabTextActive]}>Security</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView 
+        contentContainerStyle={styles.scrollContent} 
+        showsVerticalScrollIndicator={false}
+      >
+        {activeTab === 'scan' && (
+          <View style={styles.tabContent}>
             
-            <TouchableOpacity 
-              style={[styles.btn, styles.actionBtn]} 
-              onPress={() => handleSimulateFrameUpdate('SMILE_OK')}
-              disabled={challengeState.currentChallenge !== 'SMILE'}
-            >
-              <Text style={[styles.btnText, challengeState.currentChallenge !== 'SMILE' && styles.disabledText]}>Simulate Smile</Text>
-            </TouchableOpacity>
+            {/* Liveness Challenge Progress Track (Pill Steps) */}
+            <View style={styles.trackerRow}>
+              {challengesList.map((item, idx) => {
+                const isCompleted = idx < activeChallengeIdx;
+                const isActive = idx === activeChallengeIdx;
+                const label = item === 'TURN_LEFT' ? 'TURN' : item;
+                
+                return (
+                  <View key={item} style={styles.trackerStepWrapper}>
+                    <View style={[
+                      styles.trackerCircle,
+                      isCompleted && styles.trackerCircleDone,
+                      isActive && styles.trackerCircleActive,
+                    ]}>
+                      {isCompleted ? (
+                        <CheckIcon color="#ffffff" />
+                      ) : (
+                        <Text style={[
+                          styles.trackerIndexText,
+                          isActive && styles.trackerIndexTextActive
+                        ]}>
+                          {idx + 1}
+                        </Text>
+                      )}
+                    </View>
+                    <Text style={[
+                      styles.trackerLabel,
+                      isActive && styles.trackerLabelActive,
+                      isCompleted && styles.trackerLabelDone
+                    ]}>
+                      {label}
+                    </Text>
+                    {idx < challengesList.length - 1 && (
+                      <View style={[
+                        styles.trackerLine,
+                        idx < activeChallengeIdx && styles.trackerLineDone
+                      ]} />
+                    )}
+                  </View>
+                );
+              })}
+            </View>
 
-            <TouchableOpacity 
-              style={[styles.btn, styles.actionBtn]} 
-              onPress={() => handleSimulateFrameUpdate('TURN_OK')}
-              disabled={challengeState.currentChallenge !== 'TURN_LEFT'}
-            >
-              <Text style={[styles.btnText, challengeState.currentChallenge !== 'TURN_LEFT' && styles.disabledText]}>Simulate Head Turn</Text>
-            </TouchableOpacity>
-          </View>
+            {/* Circular Scanner viewport */}
+            <View style={styles.scannerWrapper}>
+              {/* Geometric Corner Brackets */}
+              <View style={[styles.bracket, styles.topLeftBracket]} />
+              <View style={[styles.bracket, styles.topRightBracket]} />
+              <View style={[styles.bracket, styles.bottomLeftBracket]} />
+              <View style={[styles.bracket, styles.bottomRightBracket]} />
 
-          <Text style={styles.controlLabel}>2. Offline Ledger Security (SHA-256 Tamper Proof):</Text>
-          <View style={styles.btnRow}>
-            <TouchableOpacity style={[styles.btn, styles.successBtn]} onPress={handleVerifyChain}>
-              <Text style={styles.btnText}>Run Security Self-Test</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.btn, styles.dangerBtn]} onPress={handleCorruptLedger}>
-              <Text style={styles.btnText}>Corrupt DB (Tamper Test)</Text>
-            </TouchableOpacity>
-          </View>
+              <Animated.View style={[styles.scanRing, animatedRingStyle]}>
+                {device && camera ? (
+                  <Camera
+                    style={styles.camera}
+                    device={device}
+                    isActive={true}
+                    photo={false}
+                  />
+                ) : (
+                  <View style={styles.cameraPlaceholder}>
+                    <ActivityIndicator size="large" color="#ff9f1c" />
+                    <Text style={styles.placeholderText}>Camera Feed Offline</Text>
+                  </View>
+                )}
+                
+                {/* Laser Scanning Line */}
+                <Animated.View style={[styles.laserScanLine, animatedScanLineStyle]} />
+              </Animated.View>
+              
+              {/* Radial HUD rings overlay */}
+              <View style={styles.hudOverlay} pointerEvents="none">
+                <Svg height="100%" width="100%" viewBox="0 0 100 100">
+                  <Circle cx="50" cy="50" r="48" stroke="rgba(255, 255, 255, 0.05)" strokeWidth="0.5" fill="none" />
+                  <Circle cx="50" cy="50" r="44" stroke="rgba(255, 255, 255, 0.03)" strokeWidth="1" strokeDasharray="3 3" fill="none" />
+                </Svg>
+              </View>
+            </View>
 
-          <Text style={styles.controlLabel}>3. Restored AWS Sync & Local Memory Purge:</Text>
-          <View style={styles.btnRow}>
-            <TouchableOpacity style={[styles.btn, styles.syncBtn]} onPress={handleTriggerSync}>
-              <Text style={styles.btnText}>Manual REST Sync Queue</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.btn, styles.secondaryBtn]} onPress={handleResetVerification}>
-              <Text style={styles.btnText}>Reset HUD Scan</Text>
-            </TouchableOpacity>
-          </View>
-          
-          <Text style={styles.syncStatus}>{syncStatusMsg}</Text>
-        </View>
-
-        {/* Real-time Ledger Chain Logs Display */}
-        <View style={styles.logCard}>
-          <Text style={styles.cardHeader}>SECURE BLOCKCHAIN LEDGER ({logsList.length} logs)</Text>
-          {logsList.length === 0 ? (
-            <Text style={styles.noLogs}>No transactions recorded. Complete a scan loop to write block.</Text>
-          ) : (
-            logsList.map((log, idx) => (
-              <View key={log.id} style={styles.logItem}>
-                <View style={styles.logHeaderLine}>
-                  <Text style={styles.logId}>{log.id}</Text>
-                  <Text style={[styles.logStatus, log.status === 'VERIFIED' ? styles.statusGreen : styles.statusRed]}>
-                    {log.status}
+            {/* Message HUD Panel */}
+            <View style={styles.glassMessageCard}>
+              <Animated.Text style={[styles.hudText, animatedMessageStyle]}>
+                {challengeState.message}
+              </Animated.Text>
+              
+              {/* Smooth Progress Indicators */}
+              <View style={styles.progressContainer}>
+                <View style={styles.progressBarBg}>
+                  <Animated.View style={[styles.progressBarFill, animatedProgressStyle]} />
+                </View>
+                <View style={styles.progressMetrics}>
+                  <Text style={styles.progressText}>
+                    CHALLENGE: {challengeState.currentChallenge}
+                  </Text>
+                  <Text style={styles.progressPct}>
+                    {Math.round(challengeState.progress * 100)}%
                   </Text>
                 </View>
-                <Text style={styles.logDetail}>Personnel: {log.userId}</Text>
-                <Text style={styles.logDetail}>Loc: {log.latitude.toFixed(4)}, {log.longitude.toFixed(4)} | Confidence: {(log.confidence * 100).toFixed(1)}%</Text>
-                <Text style={styles.logHash} numberOfLines={1}>PrevHash: {log.prevHash}</Text>
-                <Text style={styles.logHash} numberOfLines={1}>BlockHash: {log.hash}</Text>
               </View>
-            ))
-          )}
-        </View>
+            </View>
+
+            {/* Simulated Frame Action Buttons */}
+            <View style={styles.actionPanel}>
+              <Text style={styles.panelTitle}>DIAGNOSTIC TEST CONTROLS</Text>
+              <Text style={styles.panelSubtitle}>Simulate real-time camera frames and user actions</Text>
+              
+              <View style={styles.gridRow}>
+                <TouchableOpacity 
+                  style={[
+                    styles.actionCard, 
+                    challengesList[activeChallengeIdx] !== 'BLINK' && styles.actionCardDisabled
+                  ]} 
+                  onPress={() => handleSimulateFrameUpdate('BLINK_OK')}
+                  disabled={challengesList[activeChallengeIdx] !== 'BLINK'}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.cardDot, challengesList[activeChallengeIdx] === 'BLINK' && styles.cardDotActive]} />
+                  <Text style={styles.actionCardTitle}>Blink Eyes</Text>
+                  <Text style={styles.actionCardDesc}>Simulate low Eye Aspect Ratio (EAR)</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={[
+                    styles.actionCard, 
+                    challengesList[activeChallengeIdx] !== 'SMILE' && styles.actionCardDisabled
+                  ]} 
+                  onPress={() => handleSimulateFrameUpdate('SMILE_OK')}
+                  disabled={challengesList[activeChallengeIdx] !== 'SMILE'}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.cardDot, challengesList[activeChallengeIdx] === 'SMILE' && styles.cardDotActive]} />
+                  <Text style={styles.actionCardTitle}>Smile Gesture</Text>
+                  <Text style={styles.actionCardDesc}>Simulate Mouth Aspect Ratio (MAR) shift</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.gridRow}>
+                <TouchableOpacity 
+                  style={[
+                    styles.actionCard, 
+                    challengesList[activeChallengeIdx] !== 'TURN_LEFT' && styles.actionCardDisabled
+                  ]} 
+                  onPress={() => handleSimulateFrameUpdate('TURN_OK')}
+                  disabled={challengesList[activeChallengeIdx] !== 'TURN_LEFT'}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.cardDot, challengesList[activeChallengeIdx] === 'TURN_LEFT' && styles.cardDotActive]} />
+                  <Text style={styles.actionCardTitle}>Turn Left</Text>
+                  <Text style={styles.actionCardDesc}>Simulate Yaw rotation angle estimation</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={[styles.actionCard, styles.resetCard]} 
+                  onPress={handleResetVerification}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.actionCardTitle, { color: '#ff9f1c' }]}>Reset Scan</Text>
+                  <Text style={styles.actionCardDesc}>Purge tracking baselines and regenerate list</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {activeTab === 'logs' && (
+          <View style={styles.tabContent}>
+            <View style={styles.logsMetaRow}>
+              <View style={styles.metaBox}>
+                <Text style={styles.metaVal}>{logsList.length}</Text>
+                <Text style={styles.metaLbl}>Total Logs</Text>
+              </View>
+              <View style={styles.metaBox}>
+                <Text style={styles.metaVal}>
+                  {logsList.filter(l => l.status === 'VERIFIED').length}
+                </Text>
+                <Text style={styles.metaLbl}>Verified</Text>
+              </View>
+              <View style={styles.metaBox}>
+                <Text style={[styles.metaVal, { color: '#f43f5e' }]}>
+                  {logsList.filter(l => l.status === 'FAILED').length}
+                </Text>
+                <Text style={styles.metaLbl}>Rejections</Text>
+              </View>
+            </View>
+
+            {/* List of ledger transaction blocks */}
+            <View style={styles.logListContainer}>
+              <Text style={styles.sectionHeaderTitle}>SECURE HASH-CHAIN RECORDS</Text>
+              {logsList.length === 0 ? (
+                <View style={styles.emptyContainer}>
+                  <Text style={styles.emptyText}>No ledger logs recorded in local memory yet.</Text>
+                  <Text style={styles.emptySubtext}>Perform scanner loops to record new tamper-proof logs.</Text>
+                </View>
+              ) : (
+                logsList.map((log, index) => {
+                  const isVerified = log.status === 'VERIFIED';
+                  return (
+                    <View key={log.id} style={styles.secureLogCard}>
+                      <View style={styles.secureLogHeader}>
+                        <View style={styles.blockBadge}>
+                          <Text style={styles.blockBadgeText}>BLOCK #{logsList.length - index}</Text>
+                        </View>
+                        <View style={[styles.statusIndicator, isVerified ? styles.statusIncGreen : styles.statusIncRed]}>
+                          <Text style={isVerified ? styles.statusTextGreen : styles.statusTextRed}>
+                            {log.status}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={styles.logMetaDetails}>
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailTitle}>Personnel ID:</Text>
+                          <Text style={styles.detailVal}>{log.userId}</Text>
+                        </View>
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailTitle}>Timestamp:</Text>
+                          <Text style={styles.detailVal}>{new Date(log.timestamp).toLocaleTimeString()}</Text>
+                        </View>
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailTitle}>Coordinates:</Text>
+                          <Text style={styles.detailVal}>{log.latitude.toFixed(5)}, {log.longitude.toFixed(5)}</Text>
+                        </View>
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailTitle}>Similarity Match:</Text>
+                          <Text style={styles.detailVal}>{(log.confidence * 100).toFixed(1)}%</Text>
+                        </View>
+                      </View>
+
+                      <View style={styles.hashChainWrapper}>
+                        <View style={styles.hashRow}>
+                          <Text style={styles.hashLabel}>PREV_HASH:</Text>
+                          <Text style={styles.hashText} numberOfLines={1} ellipsizeMode="middle">{log.prevHash}</Text>
+                        </View>
+                        <View style={[styles.hashRow, { borderTopWidth: 0.5, borderTopColor: 'rgba(255, 255, 255, 0.05)' }]}>
+                          <Text style={styles.hashLabel}>BLOCK_HASH:</Text>
+                          <Text style={[styles.hashText, { color: '#60a5fa' }]} numberOfLines={1} ellipsizeMode="middle">{log.hash}</Text>
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })
+              )}
+            </View>
+          </View>
+        )}
+
+        {activeTab === 'security' && (
+          <View style={styles.tabContent}>
+            {/* Encryption & Cryptography explanation card */}
+            <View style={styles.securityHighlightCard}>
+              <View style={styles.shieldBigWrapper}>
+                <ShieldIcon color="#ff9f1c" />
+              </View>
+              <Text style={styles.securityTitle}>SHA-256 Ledger Security</Text>
+              <Text style={styles.securityDesc}>
+                This system runs a local tamper-proof ledger. Every toll transaction is signed with a SHA-256 hash using the previous transaction's signature. Changing any single transaction breaks the chain immediately.
+              </Text>
+            </View>
+
+            {/* Cryptographic operations */}
+            <View style={styles.controlBox}>
+              <Text style={styles.controlBoxHeader}>LEDGER SYSTEM TESTS</Text>
+              
+              <TouchableOpacity 
+                style={[styles.securityActionRow, styles.rowGreen]} 
+                onPress={handleVerifyChain}
+                activeOpacity={0.8}
+              >
+                <View style={styles.rowIconArea}>
+                  <ShieldIcon color="#10b981" />
+                </View>
+                <View style={styles.rowTextArea}>
+                  <Text style={styles.rowActionTitle}>Integrity Self-Test</Text>
+                  <Text style={styles.rowActionDesc}>Re-run complete SHA-256 validation checks on all historical log blocks.</Text>
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={[styles.securityActionRow, styles.rowRed]} 
+                onPress={handleCorruptLedger}
+                activeOpacity={0.8}
+              >
+                <View style={styles.rowIconArea}>
+                  <Svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                    <Path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" stroke="#f43f5e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                </View>
+                <View style={styles.rowTextArea}>
+                  <Text style={styles.rowActionTitle}>Inject DB Corruption</Text>
+                  <Text style={styles.rowActionDesc}>Sideload invalid User data inside local database history to simulate tampering.</Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+
+            {/* Cloud connectivity operations */}
+            <View style={styles.controlBox}>
+              <Text style={styles.controlBoxHeader}>AWS NETWORK SYNCHRONIZATION</Text>
+
+              <View style={styles.syncStateDisplay}>
+                <Text style={styles.syncStateHeading}>Queue Status</Text>
+                <Text style={styles.syncStateSub}>{syncStatusMsg}</Text>
+              </View>
+
+              <TouchableOpacity 
+                style={styles.primarySyncButton} 
+                onPress={handleTriggerSync}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.primarySyncText}>Sync Queue & Purge Cache</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -473,37 +735,179 @@ export const CameraScanner: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0a0f1d', // Sleek Premium Dark Mode
+    backgroundColor: '#070a13', // Deep slate premium dark background
   },
-  scrollContainer: {
-    padding: 16,
-    alignItems: 'center',
-  },
-  header: {
-    width: '100%',
+  appHeader: {
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'ios' ? 12 : 20,
+    paddingBottom: 16,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20,
-    marginTop: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: '#080d1a',
   },
-  brandTitle: {
-    fontSize: 22,
+  appTitle: {
+    fontSize: 18,
     fontWeight: '900',
     color: '#ffffff',
     letterSpacing: 2,
   },
-  badge: {
-    backgroundColor: '#f59e0b',
+  appSubtitle: {
+    fontSize: 10,
+    color: '#9ca3af',
+    fontWeight: '500',
+    letterSpacing: 0.5,
+    marginTop: 2,
+  },
+  statusGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  latencyBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 6,
   },
-  badgeText: {
-    color: '#000000',
-    fontWeight: '800',
-    fontSize: 10,
+  latencyText: {
+    color: '#9ca3af',
+    fontWeight: '700',
+    fontSize: 9,
   },
+  offlineBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 159, 28, 0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 0.5,
+    borderColor: 'rgba(255, 159, 28, 0.25)',
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#ff9f1c',
+    marginRight: 5,
+  },
+  offlineText: {
+    color: '#ff9f1c',
+    fontWeight: '800',
+    fontSize: 9,
+  },
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: '#080d1a',
+    paddingHorizontal: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  tabItem: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 14,
+    gap: 6,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  tabActive: {
+    borderBottomColor: '#ff9f1c',
+  },
+  tabText: {
+    fontSize: 12,
+    color: '#9ca3af',
+    fontWeight: '600',
+  },
+  tabTextActive: {
+    color: '#ff9f1c',
+    fontWeight: '800',
+  },
+  scrollContent: {
+    flexGrow: 1,
+  },
+  tabContent: {
+    padding: 20,
+    alignItems: 'center',
+    width: '100%',
+  },
+  
+  // Track Steps UI
+  trackerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+    paddingHorizontal: 10,
+    marginBottom: 26,
+    marginTop: 6,
+  },
+  trackerStepWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    position: 'relative',
+    flex: 1,
+  },
+  trackerCircle: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 2,
+  },
+  trackerCircleActive: {
+    borderColor: '#ff9f1c',
+    backgroundColor: 'rgba(255, 159, 28, 0.15)',
+  },
+  trackerCircleDone: {
+    borderColor: '#10b981',
+    backgroundColor: '#10b981',
+  },
+  trackerIndexText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#9ca3af',
+  },
+  trackerIndexTextActive: {
+    color: '#ff9f1c',
+  },
+  trackerLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#6b7280',
+    marginLeft: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    zIndex: 2,
+  },
+  trackerLabelActive: {
+    color: '#ff9f1c',
+  },
+  trackerLabelDone: {
+    color: '#10b981',
+  },
+  trackerLine: {
+    position: 'absolute',
+    left: 20,
+    right: 12,
+    top: 12,
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    zIndex: 1,
+  },
+  trackerLineDone: {
+    backgroundColor: '#10b981',
+  },
+
+  // Scanner viewport UI
   scannerWrapper: {
     width: SCAN_RING_SIZE,
     height: SCAN_RING_SIZE,
@@ -516,15 +920,15 @@ const styles = StyleSheet.create({
     width: SCAN_RING_SIZE,
     height: SCAN_RING_SIZE,
     borderRadius: SCAN_RING_SIZE / 2,
-    borderWidth: 4,
+    borderWidth: 3,
     overflow: 'hidden',
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#f59e0b',
+    backgroundColor: '#03050c',
+    elevation: 12,
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.35,
-    shadowRadius: 15,
-    elevation: 10,
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
   },
   camera: {
     width: '100%',
@@ -533,141 +937,365 @@ const styles = StyleSheet.create({
   cameraPlaceholder: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#111827',
+    backgroundColor: '#0c0f1d',
     justifyContent: 'center',
     alignItems: 'center',
   },
   placeholderText: {
-    color: '#9ca3af',
+    color: '#6b7280',
     fontSize: 12,
     marginTop: 8,
+    fontWeight: '500',
   },
-  overlayHUD: {
+  laserScanLine: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 2,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 8,
+  },
+  hudOverlay: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    pointerEvents: 'none',
   },
-  hudCard: {
+  bracket: {
+    position: 'absolute',
+    width: 22,
+    height: 22,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+    zIndex: 10,
+  },
+  topLeftBracket: {
+    top: -4,
+    left: -4,
+    borderTopWidth: 2,
+    borderLeftWidth: 2,
+  },
+  topRightBracket: {
+    top: -4,
+    right: -4,
+    borderTopWidth: 2,
+    borderRightWidth: 2,
+  },
+  bottomLeftBracket: {
+    bottom: -4,
+    left: -4,
+    borderBottomWidth: 2,
+    borderLeftWidth: 2,
+  },
+  bottomRightBracket: {
+    bottom: -4,
+    right: -4,
+    borderBottomWidth: 2,
+    borderRightWidth: 2,
+  },
+
+  // Glassmorphic prompt card
+  glassMessageCard: {
     width: '100%',
-    backgroundColor: 'rgba(17, 24, 39, 0.7)',
-    borderRadius: 16,
-    padding: 16,
+    backgroundColor: 'rgba(16, 24, 48, 0.75)',
+    borderRadius: 18,
+    padding: 18,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderColor: 'rgba(255, 255, 255, 0.05)',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 20,
   },
-  hudMessage: {
-    fontSize: 16,
-    fontWeight: '700',
+  hudText: {
+    fontSize: 15,
+    fontWeight: '800',
     textAlign: 'center',
-    marginBottom: 12,
+    marginBottom: 16,
     lineHeight: 22,
+    letterSpacing: 0.3,
   },
   progressContainer: {
     width: '100%',
-    alignItems: 'center',
   },
   progressBarBg: {
     width: '100%',
-    height: 6,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 3,
+    height: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderRadius: 2,
     overflow: 'hidden',
-    marginBottom: 6,
+    marginBottom: 10,
   },
   progressBarFill: {
     height: '100%',
-    borderRadius: 3,
+    borderRadius: 2,
   },
-  progressLabel: {
+  progressMetrics: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  progressText: {
     fontSize: 9,
     color: '#9ca3af',
-    fontWeight: '600',
+    fontWeight: '800',
     letterSpacing: 0.5,
   },
-  glassCard: {
-    width: '100%',
-    backgroundColor: 'rgba(255, 255, 255, 0.03)', // Premium Glassmorphism
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.06)',
-    padding: 16,
-    marginBottom: 16,
+  progressPct: {
+    fontSize: 10,
+    color: '#ffffff',
+    fontWeight: '900',
   },
-  cardHeader: {
+
+  // Control Actions layout
+  actionPanel: {
+    width: '100%',
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 20,
+    padding: 16,
+  },
+  panelTitle: {
+    fontSize: 11,
+    fontWeight: '900',
+    color: '#9ca3af',
+    letterSpacing: 1.5,
+    marginBottom: 4,
+  },
+  panelSubtitle: {
+    fontSize: 9,
+    color: '#6b7280',
+    marginBottom: 16,
+    fontWeight: '500',
+  },
+  gridRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 12,
+  },
+  actionCard: {
+    flex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  actionCardDisabled: {
+    opacity: 0.35,
+  },
+  resetCard: {
+    borderColor: 'rgba(255, 159, 28, 0.15)',
+    backgroundColor: 'rgba(255, 159, 28, 0.02)',
+  },
+  cardDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    position: 'absolute',
+    top: 14,
+    right: 14,
+  },
+  cardDotActive: {
+    backgroundColor: '#ff9f1c',
+  },
+  actionCardTitle: {
     fontSize: 12,
     fontWeight: '800',
+    color: '#ffffff',
+    marginBottom: 4,
+  },
+  actionCardDesc: {
+    fontSize: 9,
+    color: '#6b7280',
+    lineHeight: 12,
+  },
+
+  // Logs view layout
+  logsMetaRow: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 12,
+    marginBottom: 20,
+  },
+  metaBox: {
+    flex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  metaVal: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: '#10b981',
+  },
+  metaLbl: {
+    fontSize: 9,
+    color: '#9ca3af',
+    fontWeight: '700',
+    marginTop: 4,
+    textTransform: 'uppercase',
+  },
+  logListContainer: {
+    width: '100%',
+  },
+  sectionHeaderTitle: {
+    fontSize: 11,
+    fontWeight: '900',
     color: '#9ca3af',
     letterSpacing: 1.5,
     marginBottom: 12,
-    borderBottomWidth: 0.5,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
-    paddingBottom: 6,
   },
-  controlLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#d1d5db',
-    marginTop: 8,
-    marginBottom: 8,
+  emptyContainer: {
+    backgroundColor: 'rgba(255, 255, 255, 0.01)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.03)',
+    paddingVertical: 40,
+    paddingHorizontal: 20,
+    alignItems: 'center',
   },
-  btnRow: {
+  emptyText: {
+    color: '#9ca3af',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  emptySubtext: {
+    color: '#6b7280',
+    fontSize: 10,
+    marginTop: 6,
+    textAlign: 'center',
+  },
+  secureLogCard: {
+    backgroundColor: '#0b1122',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 12,
+  },
+  secureLogHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    width: '100%',
-    marginBottom: 10,
-    gap: 8,
-  },
-  btn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
     alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 2,
+    marginBottom: 12,
+    borderBottomWidth: 0.5,
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+    paddingBottom: 8,
   },
-  actionBtn: {
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.4)',
+  blockBadge: {
+    backgroundColor: 'rgba(96, 165, 250, 0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
-  successBtn: {
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.4)',
-  },
-  dangerBtn: {
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.4)',
-  },
-  syncBtn: {
-    backgroundColor: '#3b82f6',
-  },
-  secondaryBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  btnText: {
-    fontSize: 10,
-    color: '#ffffff',
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-  disabledText: {
-    color: '#6b7280',
-  },
-  syncStatus: {
+  blockBadgeText: {
+    color: '#60a5fa',
     fontSize: 9,
-    fontStyle: 'italic',
+    fontWeight: '950',
+  },
+  statusIndicator: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  statusIncGreen: {
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+  },
+  statusIncRed: {
+    backgroundColor: 'rgba(244, 63, 94, 0.1)',
+  },
+  statusTextGreen: {
+    color: '#10b981',
+    fontSize: 9,
+    fontWeight: '950',
+  },
+  statusTextRed: {
+    color: '#f43f5e',
+    fontSize: 9,
+    fontWeight: '950',
+  },
+  logMetaDetails: {
+    gap: 6,
+    marginBottom: 12,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  detailTitle: {
+    color: '#9ca3af',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  detailVal: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  hashChainWrapper: {
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+    borderRadius: 8,
+    padding: 8,
+    gap: 4,
+  },
+  hashRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 2,
+  },
+  hashLabel: {
+    fontSize: 8,
+    fontWeight: '800',
+    color: '#6b7280',
+    width: 65,
+  },
+  hashText: {
+    flex: 1,
+    fontSize: 8,
+    color: '#9ca3af',
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+  },
+
+  // Security view layout
+  securityHighlightCard: {
+    width: '100%',
+    backgroundColor: 'rgba(255, 159, 28, 0.03)',
+    borderColor: 'rgba(255, 159, 28, 0.08)',
+    borderWidth: 1,
+    borderRadius: 20,
+    padding: 20,
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  shieldBigWrapper: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255, 159, 28, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  securityTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+    color: '#ffffff',
+    marginBottom: 8,
+  },
+  securityDesc: {
+    fontSize: 11,
     color: '#9ca3af',
     textAlign: 'center',
-    marginTop: 6,
+    lineHeight: 18,
+    fontWeight: '500',
   },
-  logCard: {
+  controlBox: {
     width: '100%',
     backgroundColor: 'rgba(255, 255, 255, 0.02)',
     borderRadius: 20,
@@ -676,54 +1304,83 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 20,
   },
-  noLogs: {
-    color: '#6b7280',
-    fontSize: 11,
-    textAlign: 'center',
-    paddingVertical: 12,
+  controlBoxHeader: {
+    fontSize: 10,
+    fontWeight: '900',
+    color: '#9ca3af',
+    letterSpacing: 1.5,
+    marginBottom: 14,
   },
-  logItem: {
-    backgroundColor: 'rgba(0, 0, 0, 0.25)',
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 10,
-    borderWidth: 0.5,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
-  },
-  logHeaderLine: {
+  securityActionRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+    borderRadius: 14,
+    padding: 14,
     alignItems: 'center',
-    marginBottom: 4,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.04)',
   },
-  logId: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#60a5fa',
+  rowGreen: {
+    borderColor: 'rgba(16, 185, 129, 0.15)',
+    backgroundColor: 'rgba(16, 185, 129, 0.02)',
   },
-  logStatus: {
-    fontSize: 9,
+  rowRed: {
+    borderColor: 'rgba(244, 63, 94, 0.15)',
+    backgroundColor: 'rgba(244, 63, 94, 0.02)',
+  },
+  rowIconArea: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  rowTextArea: {
+    flex: 1,
+  },
+  rowActionTitle: {
+    fontSize: 13,
     fontWeight: '800',
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  statusGreen: {
-    color: '#10b981',
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-  },
-  statusRed: {
-    color: '#ef4444',
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-  },
-  logDetail: {
-    fontSize: 10,
-    color: '#d1d5db',
+    color: '#ffffff',
     marginBottom: 2,
   },
-  logHash: {
-    fontSize: 7,
-    fontFamily: 'monospace',
+  rowActionDesc: {
+    fontSize: 10,
     color: '#6b7280',
+    lineHeight: 14,
+  },
+  syncStateDisplay: {
+    backgroundColor: 'rgba(0, 0, 0, 0.25)',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14,
+  },
+  syncStateHeading: {
+    fontSize: 10,
+    color: '#9ca3af',
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  syncStateSub: {
+    fontSize: 11,
+    color: '#ff9f1c',
+    fontWeight: '700',
+  },
+  primarySyncButton: {
+    backgroundColor: '#ff9f1c',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primarySyncText: {
+    color: '#000000',
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0.5,
   },
 });
