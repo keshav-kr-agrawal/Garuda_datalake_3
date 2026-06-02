@@ -1,0 +1,299 @@
+export interface Landmark3D {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export type LivenessChallenge = 'BLINK' | 'SMILE' | 'TURN_LEFT' | 'TURN_RIGHT' | 'SUCCESS' | 'FAILED';
+
+export interface ChallengeState {
+  currentChallenge: LivenessChallenge;
+  progress: number; // 0 to 1
+  isCalibrated: boolean;
+  message: string;
+}
+
+export class LivenessMathService {
+  private static instance: LivenessMathService;
+  
+  // Baselines for dynamic calibration
+  private baselineEAR = 0.30;
+  private baselineMAR = 0.15;
+  private calibrationFrames = 0;
+  private calibrationLimit = 15; // first 15 frames are used to calibrate
+  private earSum = 0;
+  private marSum = 0;
+
+  // Challenge tracking states
+  private hasBlinked = false;
+  private blinkDetectCount = 0;
+  private hasSmiled = false;
+  private hasTurned = false;
+
+  private constructor() {}
+
+  public static getInstance(): LivenessMathService {
+    if (!LivenessMathService.instance) {
+      LivenessMathService.instance = new LivenessMathService();
+    }
+    return LivenessMathService.instance;
+  }
+
+  /**
+   * Generates a randomized challenge sequence to prevent sophisticated replay attacks.
+   * Shuffles the standard active liveness tasks: BLINK, SMILE, TURN_LEFT.
+   */
+  public generateChallengeSequence(): LivenessChallenge[] {
+    const list: LivenessChallenge[] = ['BLINK', 'SMILE', 'TURN_LEFT'];
+    for (let i = list.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const temp = list[i];
+      list[i] = list[j];
+      list[j] = temp;
+    }
+    return list;
+  }
+
+  /**
+   * Resets calibration and challenge states
+   */
+  public reset(): void {
+    this.calibrationFrames = 0;
+    this.earSum = 0;
+    this.marSum = 0;
+    this.baselineEAR = 0.30;
+    this.baselineMAR = 0.15;
+    this.hasBlinked = false;
+    this.blinkDetectCount = 0;
+    this.hasSmiled = false;
+    this.hasTurned = false;
+  }
+
+  /**
+   * Calculate Euclidean Distance between two 3D landmarks
+   */
+  public distance3D(p1: Landmark3D, p2: Landmark3D): number {
+    return Math.sqrt(
+      (p1.x - p2.x) ** 2 +
+      (p1.y - p2.y) ** 2 +
+      (p1.z - p2.z) ** 2
+    );
+  }
+
+  /**
+   * Eye Aspect Ratio (EAR)
+   * Formula: EAR = (||p2 - p6|| + ||p3 - p5||) / (2 * ||p1 - p4||)
+   */
+  public calculateEAR(landmarks: Landmark3D[]): number {
+    if (landmarks.length < 468) return 0.30;
+
+    // Indices for Left Eye (MediaPipe standard mapping)
+    const l1 = landmarks[362]; // Inner corner
+    const l2 = landmarks[385]; // Top-left
+    const l3 = landmarks[386]; // Top-right
+    const l4 = landmarks[263]; // Outer corner
+    const l5 = landmarks[374]; // Bottom-right
+    const l6 = landmarks[380]; // Bottom-left
+
+    const leftEAR = (this.distance3D(l2, l6) + this.distance3D(l3, l5)) / (2.0 * this.distance3D(l1, l4));
+
+    // Indices for Right Eye (MediaPipe standard mapping)
+    const r1 = landmarks[33];   // Inner corner
+    const r2 = landmarks[160];  // Top-left
+    const r3 = landmarks[159];  // Top-right
+    const r4 = landmarks[133];  // Outer corner
+    const r5 = landmarks[145];  // Bottom-right
+    const r6 = landmarks[144];  // Bottom-left
+
+    const rightEAR = (this.distance3D(r2, r6) + this.distance3D(r3, r5)) / (2.0 * this.distance3D(r1, r4));
+
+    // Return the average EAR of both eyes
+    return (leftEAR + rightEAR) / 2.0;
+  }
+
+  /**
+   * Mouth Aspect Ratio (MAR)
+   * Formula: MAR = (||m2 - m8|| + ||m3 - m7|| + ||m4 - m6||) / (2 * ||m1 - m5||)
+   */
+  public calculateMAR(landmarks: Landmark3D[]): number {
+    if (landmarks.length < 468) return 0.15;
+
+    // Indices for Outer/Inner Lip Contour (MediaPipe standard mapping)
+    const m1 = landmarks[78];   // Left corner
+    const m2 = landmarks[81];   // Top lip left-mid
+    const m3 = landmarks[82];   // Top lip center-mid
+    const m4 = landmarks[13];   // Top lip right-mid
+    const m5 = landmarks[308];  // Right corner
+    const m6 = landmarks[14];   // Bottom lip right-mid
+    const m7 = landmarks[312];  // Bottom lip center-mid
+    const m8 = landmarks[311];  // Bottom lip left-mid
+
+    const verticalDist = this.distance3D(m2, m8) + this.distance3D(m3, m7) + this.distance3D(m4, m6);
+    const horizontalDist = 2.0 * this.distance3D(m1, m5);
+
+    return horizontalDist === 0 ? 0 : verticalDist / horizontalDist;
+  }
+
+  /**
+   * Lightweight 3D Head Pose Euler Estimation (Yaw, Pitch, Roll)
+   * Does not require heavy C++ PNP Solvers; ideal for Hermes engine.
+   */
+  public estimatePose(landmarks: Landmark3D[]): { yaw: number; pitch: number; roll: number } {
+    if (landmarks.length < 468) return { yaw: 0, pitch: 0, roll: 0 };
+
+    const nose = landmarks[1];
+    const leftEye = landmarks[263];
+    const rightEye = landmarks[33];
+    const forehead = landmarks[10];
+    const chin = landmarks[152];
+
+    // 1. Yaw (Left / Right turn): Compare eye-to-nose relative lateral distance
+    const distRight = this.distance3D(nose, rightEye);
+    const distLeft = this.distance3D(nose, leftEye);
+    const distEyes = this.distance3D(rightEye, leftEye);
+    const yaw = distEyes === 0 ? 0 : ((distRight - distLeft) / distEyes) * 90.0; // scale to rough degrees
+
+    // 2. Pitch (Up / Down tilt): Compare forehead-to-nose vs chin-to-nose vertical distance
+    const distForehead = this.distance3D(nose, forehead);
+    const distChin = this.distance3D(nose, chin);
+    const distFaceHeight = this.distance3D(forehead, chin);
+    const pitch = distFaceHeight === 0 ? 0 : ((distForehead - distChin) / distFaceHeight) * 90.0;
+
+    // 3. Roll (Head tilt): Angle between outer eye corners
+    const roll = Math.atan2(leftEye.y - rightEye.y, leftEye.x - rightEye.x) * (180.0 / Math.PI);
+
+    return { yaw, pitch, roll };
+  }
+
+  /**
+   * Calibrates baselines using the first N open-eye scanning frames
+   */
+  public calibrate(ear: number, mar: number): boolean {
+    if (this.calibrationFrames < this.calibrationLimit) {
+      this.earSum += ear;
+      this.marSum += mar;
+      this.calibrationFrames++;
+      
+      if (this.calibrationFrames === this.calibrationLimit) {
+        this.baselineEAR = this.earSum / this.calibrationLimit;
+        this.baselineMAR = this.marSum / this.calibrationLimit;
+        console.log(`[LivenessMath] Calibrated! Baseline EAR: ${this.baselineEAR.toFixed(3)}, Baseline MAR: ${this.baselineMAR.toFixed(3)}`);
+      }
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Runs the challenge-response anti-spoofing logic
+   */
+  public processFrame(
+    landmarks: Landmark3D[], 
+    activeChallenge: LivenessChallenge
+  ): ChallengeState {
+    const ear = this.calculateEAR(landmarks);
+    const mar = this.calculateMAR(landmarks);
+    const { yaw, pitch, roll } = this.estimatePose(landmarks);
+
+    const calibrated = this.calibrate(ear, mar);
+    if (!calibrated) {
+      return {
+        currentChallenge: activeChallenge,
+        progress: this.calibrationFrames / this.calibrationLimit,
+        isCalibrated: false,
+        message: 'Calibrating system... Keep eyes open',
+      };
+    }
+
+    let progress = 0;
+    let message = '';
+    let success = false;
+
+    switch (activeChallenge) {
+      case 'BLINK':
+        // A blink is classified if the EAR falls below 60% of the open-eye baseline
+        const blinkThreshold = this.baselineEAR * 0.60;
+        
+        if (ear < blinkThreshold) {
+          this.blinkDetectCount++;
+        } else if (this.blinkDetectCount > 0 && ear >= this.baselineEAR * 0.85) {
+          // Eye closed then fully opened back up
+          this.hasBlinked = true;
+        }
+        
+        progress = this.hasBlinked ? 1 : (this.blinkDetectCount > 0 ? 0.5 : 0);
+        message = this.hasBlinked ? 'Blink detected!' : 'Please blink your eyes';
+        success = this.hasBlinked;
+        break;
+
+      case 'SMILE':
+        // A smile is verified if the MAR increases by at least 50% above the open baseline
+        const smileThreshold = this.baselineMAR * 1.50;
+        if (mar > smileThreshold) {
+          this.hasSmiled = true;
+        }
+
+        progress = this.hasSmiled ? 1 : Math.min(mar / smileThreshold, 0.9);
+        message = this.hasSmiled ? 'Smile detected!' : 'Please smile clearly';
+        success = this.hasSmiled;
+        break;
+
+      case 'TURN_LEFT':
+        // Yaw threshold for left turn (> 15 degrees)
+        const leftYawThreshold = 15.0;
+        if (yaw > leftYawThreshold) {
+          this.hasTurned = true;
+        }
+
+        progress = this.hasTurned ? 1 : Math.min(Math.max(yaw, 0) / leftYawThreshold, 0.9);
+        message = this.hasTurned ? 'Left turn detected!' : 'Slowly turn your head left';
+        success = this.hasTurned;
+        break;
+
+      case 'TURN_RIGHT':
+        // Yaw threshold for right turn (< -15 degrees)
+        const rightYawThreshold = -15.0;
+        if (yaw < rightYawThreshold) {
+          this.hasTurned = true;
+        }
+
+        progress = this.hasTurned ? 1 : Math.min(Math.max(-yaw, 0) / Math.abs(rightYawThreshold), 0.9);
+        message = this.hasTurned ? 'Right turn detected!' : 'Slowly turn your head right';
+        success = this.hasTurned;
+        break;
+
+      case 'SUCCESS':
+        return {
+          currentChallenge: 'SUCCESS',
+          progress: 1.0,
+          isCalibrated: true,
+          message: 'Liveness verification successful!',
+        };
+
+      case 'FAILED':
+        return {
+          currentChallenge: 'FAILED',
+          progress: 0.0,
+          isCalibrated: true,
+          message: 'Verification failed. Try again.',
+        };
+    }
+
+    if (success) {
+      // Small debounce delay before transitioning
+      return {
+        currentChallenge: activeChallenge,
+        progress: 1.0,
+        isCalibrated: true,
+        message,
+      };
+    }
+
+    return {
+      currentChallenge: activeChallenge,
+      progress,
+      isCalibrated: true,
+      message,
+    };
+  }
+}
