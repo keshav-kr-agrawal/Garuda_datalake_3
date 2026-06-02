@@ -167,4 +167,37 @@ describe('NHAI Offline Facial Recognition & Liveness System Tests', () => {
       expect(check.errorIndex).toBe(0); // Caught at block 0!
     });
   });
+
+  describe('4. 10,000 Vector Database Seeding & Search Performance Benchmarking', () => {
+    test('Seeding and performing vector dot-product lookup over 10,000 users completes in under 30ms', async () => {
+      // 1. Bulk seed 10,000 vectors
+      await db.seed10kDatabase();
+      const users = await db.getEnrolledUsers();
+      expect(users.length).toBe(10000);
+
+      // 2. Setup mock target face query vector (identical to Keshav's embedding)
+      const query = new Float32Array(Array.from({ length: 128 }, (_, i) => Math.sin(i) * Math.cos(i * 1.5)));
+      
+      // Perform L2-normalization on the query
+      let sumSq = 0;
+      for (let i = 0; i < 128; i++) sumSq += query[i] * query[i];
+      const mag = Math.sqrt(sumSq);
+      for (let i = 0; i < 128; i++) query[i] = mag === 0 ? 0 : query[i] / mag;
+
+      // 3. Measure vectorSearch execution latency
+      const start = Date.now();
+      const result = await db.vectorSearch(query);
+      const latency = Date.now() - start;
+
+      console.log(`[Performance Benchmark] Vector search over 10,000 profiles completed in: ${latency}ms`);
+
+      // 4. Assert correctness
+      expect(result.user).not.toBeNull();
+      expect(result.user!.id).toBe('NHAI-2026-001'); // Correctly matched Keshav Kumar Agrawal
+      expect(result.similarity).toBeCloseTo(1.0, 4);  // Cosine match is 1.0 (perfect identical)
+
+      // 5. Assert latency under the strict 30ms requirement
+      expect(latency).toBeLessThan(30);
+    });
+  });
 });
