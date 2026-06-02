@@ -35,7 +35,7 @@ graph TD
     B -->|Pre-processed Float32 Array| C[react-native-fast-tflite Engine]
     C -->|Sub-Pipeline 1| D[MediaPipe Face Mesh int8]
     C -->|Sub-Pipeline 2| E[MobileFaceNet int8]
-    D -->|468 3D Landmarks| F[Mathematical Liveness Module: EAR + Euler angles]
+    D -->|468 3D Landmarks| F[Mathematical Liveness Module: EAR + MAR + Euler angles]
     E -->|128-D Quantized Vector| G[Cosine Similarity Engine]
     F -->|If Valid| G
     G -->|Search/Insert| H[ObjectBox Offline Vector DB]
@@ -80,7 +80,7 @@ This ensures structural consistency and prevents neural network failures under e
 
 ### USP 3: Premium Enterprise Polish & Academic Rigor
 *   **UX Experience:** Fluid $60\text{fps}$ visual indicators powered by `react-native-reanimated` (v3). An active bounding box that shifts color dynamically from **Amber** (calculating liveness) to **Emerald** (face verified) or **Crimson** (liveness check failed).
-*   **Academic Deliverable:** A formal, multi-page LaTeX technical documentation paper specifying our custom EAR algorithms, computational complexity analyses, and energy consumption profiling on mid-range ARM microarchitectures.
+*   **Academic Deliverable:** A formal, multi-page LaTeX technical documentation paper specifying our custom EAR/MAR algorithms, computational complexity analyses, and energy consumption profiling on mid-range ARM microarchitectures.
 
 ---
 
@@ -118,67 +118,70 @@ The timeline operates on a strict countdown system ($T\text{-minus}$).
 
 ---
 
-## 4. Task Delegation & Ownership
+## 4. Module Delegation & Action Items
 
-### 👥 Srujan & Vignesh: Core Architecture, Camera Bridging & Premium UI/UX
-*   [ ] **Project Initialization:**
-    *   Initialize React Native bare project with strict TypeScript compilation configurations.
-    *   Configure system-level optimization flags in Proguard (`proguard-rules.pro`) to strip unnecessary symbols, compressing the APK size.
-*   [ ] **Camera Integration:**
+### 📁 Track 1: Core Mobile UI & Native Bridging (Frontend / Mobile Engineers)
+*   [ ] **Project Environment & Shell Initialization:**
+    *   Bootstrap React Native bare project with strict TypeScript linting and configuration.
+    *   Configure system-level optimization flags in Proguard (`proguard-rules.pro`) to strip unused classes, reducing compiled output footprint.
+*   [ ] **Camera Hardware Bridging:**
     *   Configure `react-native-vision-camera` (v4.x) with custom permissions, high-frame-rate settings ($30\text{fps}$ lock), and resolution constraints ($640 \times 480$ or $1280 \times 720$ max to prevent memory overflow).
-    *   Implement native frame processor hooks and map them to JS worklet threads.
-*   [ ] **Minimalist UI & Animations:**
-    *   Design a sleek dark mode dashboard with zero external component library dependencies (strictly vanilla stylesheet definitions).
-    *   Implement the dynamic facial alignment grid overlay using `react-native-reanimated` (v3). Use spring physics for frame size updates instead of linear timings to ensure a buttery premium feel.
-    *   Add responsive feedback panels displaying liveness status cues (e.g., "Scanning...", "Blink Now", "Spoof Detected") with color-shifting glow states.
+    *   Build a custom Frame Processor Worklet using C++ native bindings to pipeline captured frames directly into the execution thread.
+*   [ ] **Field-Ready UI/UX & High-Fidelity Animations:**
+    *   Build a minimalist dark-themed operational dashboard optimized for outdoor viewability (no heavy third-party UI dependencies).
+    *   Implement the active facial alignment grid using `react-native-reanimated` (v3) using spring physics for bounding-box updates to keep frames fluid.
+    *   Provide real-time visual liveness prompts (e.g., "Blink slowly", "Smile slightly") with dynamic color indicators corresponding to system state (Amber for processing, Green for matched, Red for failure).
 
-### 👥 Ishaan & Harshiya: Core AI Engines, Liveness Math & Embeddings
-*   [ ] **Model Loading & Hardware Optimization:**
-    *   Quantize the MediaPipe Face Mesh model and MobileFaceNet ArcFace model into INT8 formats using the TensorFlow Lite Optimizer (`tf.lite.TFLiteConverter`).
-    *   Write model bridge loaders using `react-native-fast-tflite` to ensure hardware acceleration models compile and bind successfully on both iOS (Metal GPU) and Android (NNAPI/Hexagon DSP).
-*   [ ] **Eye Aspect Ratio (EAR) Math & Landmark Logic:**
-    *   Extract eye contours from the 468 landmark array returned by MediaPipe Face Mesh.
-    *   Implement the EAR formula in raw TS/JS within the high-performance frame worklet:
+### 📁 Track 2: Edge AI Pipeline & Liveness Mathematics (AI / ML Engineers)
+*   [ ] **Model Quantization & Inference Bridging:**
+    *   Run post-training integer quantization (INT8) on the MediaPipe Face Mesh and MobileFaceNet ArcFace models using `tf.lite.TFLiteConverter`.
+    *   Load quantized `.tflite` model files using `react-native-fast-tflite` and direct them to run on hardware acceleration delegates (NNAPI for Android, Metal GPU for iOS).
+*   [ ] **Eye Aspect Ratio (EAR) Mathematical Module:**
+    *   Extract specific landmark subsets corresponding to the eyes from the 468 landmarks array.
+    *   Implement the mathematical EAR algorithm inside the high-performance frame worklet:
         $$\text{EAR} = \frac{||p_2 - p_6|| + ||p_3 - p_5||}{2 ||p_1 - p_4||}$$
-    *   Establish adaptive blinking threshold calibration. The baseline open-eye value must be computed dynamically during the first $500\text{ms}$ of scanning to account for different eye shapes.
-    *   Write the Mouth Aspect Ratio (MAR) formula to prevent static print attack strategies.
+    *   Code dynamic threshold calibration to calculate the open-eye baseline values within the first $500\text{ms}$ of scanning to normalize metrics.
+*   [ ] **Mouth Aspect Ratio (MAR) Mathematical Module:**
+    *   Implement the MAR mathematical equation inside the frame worklet to capture mouth movements (smile/open) and block printed photo spoofing attacks:
+        $$\text{MAR} = \frac{||m_2 - m_8|| + ||m_3 - m_7|| + ||m_4 - m_6||}{2 ||m_1 - m_5||}$$
+    *   Define upper/lower bounding thresholds to confirm deliberate mouth movement challenge completion.
 *   [ ] **Euler Angle Pose Calculations:**
-    *   Select key 3D anchor points (nose tip, chin, left/right eye corners, mouth corners) and implement a lightweight perspective projection algorithm to extract Pitch, Yaw, and Roll.
-    *   Implement randomized liveness challenges (e.g., yaw threshold $> 15^{\circ}$ left, then back to center) to defeat video replay attacks.
-*   [ ] **Embedding Generator & Cosine Similarity Engine:**
-    *   Extract the aligned face crop, pass it to the MobileFaceNet model, and retrieve the L2-normalized 128-D vector.
-    *   Write the mathematical Cosine Similarity module:
+    *   Select 3D facial coordinate anchors (nose tip, chin, eye corners, mouth corners) and implement a lightweight perspective projection algorithm to extract Pitch, Yaw, and Roll.
+    *   Configure challenge-response scripts (e.g., "Rotate head left by $15^{\circ}$") to verify depth and movement.
+*   [ ] **Cosine Similarity Face Matcher:**
+    *   Extract the cropped face image, forward it to MobileFaceNet, and fetch the L2-normalized 128-D vector.
+    *   Implement the mathematical Cosine Similarity module:
         $$\text{Similarity} = \frac{\mathbf{A} \cdot \mathbf{B}}{\|\mathbf{A}\| \|\mathbf{B}\|}$$
-    *   If embeddings are properly L2-normalized, optimize the similarity check down to a pure dot product:
+    *   Because embeddings are L2-normalized, optimize the similarity check down to a pure dot product:
         $$\text{Similarity} = \sum_{i=1}^{128} A_i \cdot B_i$$
-    *   Establish an empirical verification threshold (e.g., $\text{Similarity} \ge 0.72$ for match confirmation).
+    *   Set the verification threshold (e.g., $\text{Similarity} \ge 0.72$ for match confirmation).
 
-### 👥 Mohak & Anurag: Vector Storage, Tamper-Proof Cryptography & AWS Sync
-*   [ ] **ObjectBox Local Vector Database:**
-    *   Define the DB entity schemas: `User` (ID, Name, Metadata, 128-D Float Array representation of embedding) and `AuditLog` (Transaction ID, Timestamp, Location, Status, Verification Confidence, Cryptographic Hash).
-    *   Build vector index search configurations in ObjectBox using Euclidean distance or Cosine distance indices to support ultra-low-latency verification against local registers of up to 10,000 enrolled personnel.
-*   [ ] **SHA-256 Block-Chain Ledger:**
+### 📁 Track 3: Local Data Layer, Security & Cloud Sync (DevOps / Backend Engineers)
+*   [ ] **ObjectBox/WatermelonDB Vector Storage:**
+    *   Initialize the local database engine and define schemas: `User` (ID, Name, Metadata, 128-D Float Array embedding representation) and `AuditLog` (ID, Timestamp, GPS, Verification Status, Confidence, Signature).
+    *   Configure local vector indexing parameters inside ObjectBox using Cosine distance indices to support ultra-low-latency query searches against local registers of up to 10,000 enrolled targets.
+*   [ ] **SHA-256 Cryptographic Chaining Ledger:**
     *   Implement the hash-chain function in native memory. Convert transaction attributes to a rigid, deterministic JSON string:
         `payload = timestamp + user_id + latitude + longitude + status`
-    *   Compute the SHA-256 hash using the previous block's hash as a salt.
-    *   Persist the current transaction state along with its unique computed hash.
-*   [ ] **AWS Sync & Local Database Purging Pipeline:**
-    *   Design a lightweight payload synchronization module. When internet connection state transitions to active (`NetInfo` status changes), read the un-synced queue.
-    *   Transmit the payload in batches via HTTPS to AWS API Gateway, which routes records to AWS DynamoDB / AWS Lambda for transaction integrity checks.
-    *   Implement a strict TTL (Time to Live) clean-up task. Once a sync process is successfully acknowledged by the cloud endpoint, purge vector data older than 48 hours to conserve local disk space.
+    *   Compute the SHA-256 hash using the previous block's hash as a salt:
+        $$H_n = \text{SHA-256}(H_{n-1} \parallel T_n \parallel \text{User\_ID}_n \parallel \text{Lat}_n \parallel \text{Lon}_n \parallel \text{Status}_n)$$
+    *   Commit the transaction state alongside the unique computed hash.
+*   [ ] **Background Sync & AWS Purging Service:**
+    *   Configure `react-native-background-actions` / `WorkManager` (Android) / `BGAppRefreshTask` (iOS) to trigger when the device regains connectivity.
+    *   Build a secure payload serializer to send blocks in chronological order via HTTPS to AWS API Gateway, routing to DynamoDB/Lambda.
+    *   Build a local cleanup service executing a 48-hour TTL purge on synced records to conserve storage space.
 
-### 👥 Anshul & Saket: Native Image Pre-processing, Hardware QA & LaTeX Documentation
+### 📁 Track 4: Image Pre-processing, QA & Documentation (Systems / Technical Writers)
 *   [ ] **Native Image Pre-processing (CLAHE):**
-    *   Implement the Contrast Limited Adaptive Histogram Equalization (CLAHE) algorithm in a custom C++ file to bind with the frame processor.
-    *   Optimize pixel iteration operations using NEON (for ARM architecture) or direct native buffer manipulation to guarantee the processing overhead stays under $30\text{ms}$ per frame.
-*   [ ] **Hardware Stress Testing & Profiling:**
-    *   Run continuous stress-testing profiles on target mid-range devices.
-    *   Measure execution latency, battery consumption profiles, and CPU thermal throttling states during continuous 10-minute facial tracking loops.
-    *   Optimize garbage collection allocations in the JS layer to maintain a steady $60\text{fps}$ and avoid frame-drop jitters.
-*   [ ] **LaTeX Technical Paper & Presentation Assets:**
-    *   Write the comprehensive technical paper in LaTeX format. Design a high-grade two-column academic template (analogous to CVPR/IEEE guidelines).
-    *   Detail the EAR math, mathematical formulation of Euler pose estimation, the cryptographic block-chained ledger, and the local vector query speeds.
-    *   Produce clean, professional presentation slide content highlighting the performance margins, architectural choices, and the mathematical proof of system robustness.
+    *   Implement Contrast Limited Adaptive Histogram Equalization (CLAHE) as a high-performance C++ helper.
+    *   Optimize pixel operations using ARM NEON assembly operations or native direct-memory pointers to keep latency under $30\text{ms}$ per frame.
+*   [ ] **Hardware Benchmark QA:**
+    *   Conduct profiling tests on mid-range test devices (e.g., Snapdragon 680).
+    *   Measure CPU/GPU thermal behaviors, battery drain percentages, and memory footprint metrics during continuous 10-minute facial tracking loops.
+    *   Audit garbage collection frequency in the Javascript runtime to ensure frame rendering remains stable at $60\text{fps}$.
+*   [ ] **LaTeX Whitepaper & Presentation Materials:**
+    *   Draft a high-grade academic-standard technical document detailing our mathematical formulations (EAR, MAR, Cosine Similarity), performance latencies, and security safeguards in LaTeX.
+    *   Compile the pitch deck highlighting design layouts, system benchmark graphs, and operational resilience details in high-contrast formats.
 
 ---
 
@@ -188,13 +191,13 @@ During a high-speed 24-hour sprint, code collisions can easily cost hours of eng
 
 ### 1. Branch Naming Standard
 Every branch must be prefixed with the functional category:
-*   `feat/<module-name>` (e.g., `feat/liveness-ear-math`, `feat/objectbox-vector-schema`)
-*   `fix/<bug-desc>` (e.g., `fix/fast-tflite-ios-crash`, `fix/clahe-neon-overflow`)
-*   `perf/<perf-desc>` (e.g., `perf/cosine-dot-product`)
-*   `docs/<doc-desc>` (e.g., `docs/latex-architecture`)
+*   `feat/<track-number>-<feature-name>` (e.g., `feat/t2-liveness-ear-math`, `feat/t3-objectbox-schema`)
+*   `fix/<track-number>-<bug-desc>` (e.g., `fix/t1-camera-ios-crash`, `fix/t4-clahe-neon-overflow`)
+*   `perf/<track-number>-<perf-desc>` (e.g., `perf/t2-cosine-dot-product`)
+*   `docs/<track-number>-<doc-desc>` (e.g., `docs/t4-latex-architecture`)
 
 ### 2. Pull Request (PR) & Review Rules
-*   **Target:** All branches branch off and target `develop`. The `main` branch is locked and reserved purely for working production tags.
+*   **Target:** All development branches branch off and target `develop`. The `main` branch is locked and reserved purely for working production tags.
 *   **PR Size Limit:** Keep changes localized. Max 400 lines of code changed per PR to guarantee swift reviews.
 *   **Review Quorum:** A minimum of **1 peer review approval** is required before merge.
 *   **Pre-Commit Hook Integration:** Ensure your code is formatted correctly using Prettier and passes ESLint rules before submitting a pull request.
@@ -215,6 +218,9 @@ Use these equations exactly in the codebase to implement our USP mathematical en
 ### Liveness Metric: Normalized EAR
 $$\text{EAR} = \frac{\sqrt{(x_{p2} - x_{p6})^2 + (y_{p2} - y_{p6})^2} + \sqrt{(x_{p3} - x_{p5})^2 + (y_{p3} - y_{p5})^2}}{2 \sqrt{(x_{p1} - x_{p4})^2 + (y_{p1} - y_{p4})^2}}$$
 
+### Liveness Metric: Normalized MAR
+$$\text{MAR} = \frac{\sqrt{(x_{m2} - x_{m8})^2 + (y_{m2} - y_{m8})^2} + \sqrt{(x_{m3} - x_{m7})^2 + (y_{m3} - y_{m7})^2} + \sqrt{(x_{m4} - x_{m6})^2 + (y_{m4} - y_{m6})^2}}{2 \sqrt{(x_{m1} - x_{m5})^2 + (y_{m1} - y_{m5})^2}}$$
+
 ### Face Similarity: L2-Normalized Dot Product
 Given output embeddings $\mathbf{u}, \mathbf{v} \in \mathbb{R}^{128}$ from MobileFaceNet:
 
@@ -228,9 +234,9 @@ Given output embeddings $\mathbf{u}, \mathbf{v} \in \mathbb{R}^{128}$ from Mobil
 ### Sprint Launch Checklist
 - [ ] Initialize git repository and create `main` and `develop` branches.
 - [ ] Push this `plan.md` to the root of the project repository.
-- [ ] Srujan & Vignesh: Complete bare react-native app skeleton.
-- [ ] Ishaan & Harshiya: Obtain the official MediaPipe and MobileFaceNet int8 models and verify conversion pipelines.
-- [ ] Mohak & Anurag: Set up local SQLite / ObjectBox config files and verify compiler support.
-- [ ] Anshul & Saket: Establish the LaTeX project workspace and outline the presentation deck layout.
+- [ ] Track 1: Complete bare react-native app skeleton.
+- [ ] Track 2: Obtain the official MediaPipe and MobileFaceNet int8 models and verify conversion pipelines.
+- [ ] Track 3: Set up local SQLite / ObjectBox config files and verify compiler support.
+- [ ] Track 4: Establish the LaTeX project workspace and outline the presentation deck layout.
 
 **Let's get to work. Execution starts now.**
