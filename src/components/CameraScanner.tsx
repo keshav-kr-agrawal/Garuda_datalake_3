@@ -3,16 +3,16 @@ import {
   StyleSheet,
   Text,
   View,
-  TouchableOpacity,
   ActivityIndicator,
   Alert,
   ScrollView,
   SafeAreaView,
   Dimensions,
   Platform,
+  TouchableWithoutFeedback,
 } from 'react-native';
 import { Camera, useCameraDevice } from 'react-native-vision-camera';
-import Svg, { Circle, Path, Rect } from 'react-native-svg';
+import Svg, { Circle, Path, Line } from 'react-native-svg';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -58,11 +58,53 @@ const CheckIcon = ({ color }: { color: string }) => (
   </Svg>
 );
 
+const LockIcon = ({ color }: { color: string }) => (
+  <Svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+    <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" stroke={color} strokeWidth="2" />
+    <Path d="M7 11V7a5 5 0 0110 0v4" stroke={color} strokeWidth="2" />
+  </Svg>
+);
+
+// High-fidelity spring scaling press interaction wrapper
+const ScalePress: React.FC<{
+  onPress: () => void;
+  disabled?: boolean;
+  style?: any;
+  children: React.ReactNode;
+}> = ({ onPress, disabled, style, children }) => {
+  const scale = useSharedValue(1);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
+  const handlePressIn = () => {
+    if (disabled) return;
+    scale.value = withTiming(0.96, { duration: 90 });
+  };
+
+  const handlePressOut = () => {
+    if (disabled) return;
+    scale.value = withSpring(1, { damping: 11, stiffness: 220 });
+  };
+
+  return (
+    <TouchableWithoutFeedback
+      onPressIn={handlePressIn}
+      onPressOut={handlePressOut}
+      onPress={disabled ? undefined : onPress}
+    >
+      <Animated.View style={[animatedStyle, style]}>
+        {children}
+      </Animated.View>
+    </TouchableWithoutFeedback>
+  );
+};
+
 export const CameraScanner: React.FC = () => {
   const device = useCameraDevice('front');
   const { camera, location, loading, requestPermissions } = useCameraPermissions();
 
-  // Navigation state (Sleek tabbed setup)
   const [activeTab, setActiveTab] = useState<'scan' | 'logs' | 'security'>('scan');
 
   // Core Services
@@ -86,6 +128,15 @@ export const CameraScanner: React.FC = () => {
   const [logsList, setLogsList] = useState<AuditLog[]>([]);
   const [syncStatusMsg, setSyncStatusMsg] = useState('Off-grid mode active. Sync pending.');
   
+  // Real-time ticking telemetry statistics
+  const [liveStats, setLiveStats] = useState({
+    ear: 0.320,
+    mar: 0.140,
+    yaw: 0.0,
+    pitch: 0.0,
+    fps: 30,
+  });
+
   // Reanimated Shared Values
   const statusColorVal = useSharedValue(0); // 0 = Amber (scanning), 1 = Emerald (verified), 2 = Crimson (failed)
   const ringScaleVal = useSharedValue(1);
@@ -112,8 +163,8 @@ export const CameraScanner: React.FC = () => {
     // Pulse animation (smooth breath rhythm)
     pulseVal.value = withRepeat(
       withSequence(
-        withTiming(1.03, { duration: 1500 }),
-        withTiming(0.97, { duration: 1500 })
+        withTiming(1.02, { duration: 1500 }),
+        withTiming(0.98, { duration: 1500 })
       ),
       -1,
       true
@@ -129,6 +180,42 @@ export const CameraScanner: React.FC = () => {
       true
     );
   }, []);
+
+  // Fluctuating biometric tracking telemetry simulator
+  useEffect(() => {
+    if (challengeState.currentChallenge === 'SUCCESS' || challengeState.currentChallenge === 'FAILED') {
+      return;
+    }
+    const interval = setInterval(() => {
+      setLiveStats(prev => {
+        let targetEar = 0.315 + (Math.random() - 0.5) * 0.02;
+        let targetMar = 0.135 + (Math.random() - 0.5) * 0.015;
+        let targetYaw = (Math.random() - 0.5) * 2;
+        let targetPitch = (Math.random() - 0.5) * 1.5;
+
+        const current = challengesList[activeChallengeIdx];
+        if (!challengeState.isCalibrated) {
+          // Normal open baseline
+        } else if (current === 'BLINK' && challengeState.progress > 0) {
+          targetEar = 0.102 + Math.random() * 0.03; // Closed eye simulation
+        } else if (current === 'SMILE' && challengeState.progress > 0) {
+          targetMar = 0.265 + (Math.random() - 0.5) * 0.02; // Smile stretch simulation
+        } else if (current === 'TURN_LEFT' && challengeState.progress > 0) {
+          targetYaw = 17.8 + (Math.random() - 0.5) * 1.5; // Yaw rotation simulation
+        }
+
+        return {
+          ear: Number(targetEar.toFixed(3)),
+          mar: Number(targetMar.toFixed(3)),
+          yaw: Number(targetYaw.toFixed(1)),
+          pitch: Number(targetPitch.toFixed(1)),
+          fps: Math.floor(29 + Math.random() * 2),
+        };
+      });
+    }, 200);
+
+    return () => clearInterval(interval);
+  }, [activeChallengeIdx, challengeState.currentChallenge, challengeState.isCalibrated, challengeState.progress]);
 
   // Update animated progress bar when liveness state shifts
   useEffect(() => {
@@ -212,6 +299,13 @@ export const CameraScanner: React.FC = () => {
       isCalibrated: false,
       message: 'Align face within HUD bounds to start calibration',
     });
+    setLiveStats({
+      ear: 0.320,
+      mar: 0.140,
+      yaw: 0.0,
+      pitch: 0.0,
+      fps: 30,
+    });
   };
 
   const handleSimulateFrameUpdate = (action: 'BLINK_OK' | 'SMILE_OK' | 'TURN_OK') => {
@@ -243,7 +337,7 @@ export const CameraScanner: React.FC = () => {
         ...prev,
         currentChallenge: challengesList[nextIdx],
         progress: 0,
-        message: `Next Step: Perform face challenge: ${challengesList[nextIdx]}`,
+        message: `Challenge Step ${nextIdx + 1} of ${challengesList.length}: ${challengesList[nextIdx]}`,
       }));
       
       ringScaleVal.value = 1.08;
@@ -256,7 +350,7 @@ export const CameraScanner: React.FC = () => {
         currentChallenge: 'SUCCESS',
         progress: 1.0,
         isCalibrated: true,
-        message: 'Liveness dynamic checks verified. Extracting embedding...',
+        message: 'Liveness approved. Commencing vector similarity check...',
       });
 
       if (activeUser) {
@@ -276,7 +370,7 @@ export const CameraScanner: React.FC = () => {
           
           setChallengeState(prev => ({
             ...prev,
-            message: `Identity Authenticated: ${activeUser.name}\nMatch Confidence: ${(result.confidence * 100).toFixed(1)}%`,
+            message: `User Authenticated: ${activeUser.name}\nVector Match Confidence: ${(result.confidence * 100).toFixed(1)}%`,
           }));
           Alert.alert('Verification Success', `Matched identity: ${activeUser.name} (${activeUser.role}) with ${(result.confidence * 100).toFixed(1)}% confidence.`);
         } else {
@@ -291,7 +385,7 @@ export const CameraScanner: React.FC = () => {
           setChallengeState(prev => ({
             ...prev,
             currentChallenge: 'FAILED',
-            message: 'Embedding verification mismatch. Identity rejected.',
+            message: 'Biometric mismatch. Check-in denied.',
           }));
         }
       }
@@ -302,26 +396,26 @@ export const CameraScanner: React.FC = () => {
   const handleCorruptLedger = async () => {
     const list = await dbService.getLedger();
     if (list.length < 2) {
-      Alert.alert('Demo Error', 'Record at least 2 check-ins to build a chained historical structure first.');
+      Alert.alert('Demo Halt', 'Perform at least 2 scan cycles to build transaction history blocks.');
       return;
     }
 
     const tamperedList = [...list];
-    tamperedList[0].userId = 'UNAUTHORIZED_INTRUDER_99';
+    tamperedList[0].userId = 'ATTEMPTED_BYPASS_99';
     await dbService.saveLedger(tamperedList);
     await refreshLogs();
-    Alert.alert('Database Tampered', 'Deliberately altered records in cache storage. Signature checks will now detect tampering.');
+    Alert.alert('Tampered DB Cache', 'Intentionally injected rogue User ID details to simulate system tampering.');
   };
 
   const handleVerifyChain = async () => {
     const res = await ledgerService.verifyLedgerIntegrity();
     if (res.valid) {
-      Alert.alert('Chain Secure', '100% cryptographic ledger checks passed. Data integrity verified.');
+      Alert.alert('Chain Valid', '100% cryptographic ledger checks passed. Data integrity verified.');
     } else {
       statusColorVal.value = 2; // Crimson
       Alert.alert(
-        '🚨 DATA CORRUPTION DETECTED!',
-        `Ledger integrity check failed at index ${res.errorIndex}. Hashes mismatched. Data syncing disabled.`,
+        '🚨 DATA COMPROMISED!',
+        `Ledger integrity check failed at index ${res.errorIndex}. Hash chaining mismatch. Background syncing locked down.`,
         [
           { 
             text: 'Trigger Recalibration / Heal', 
@@ -377,34 +471,31 @@ export const CameraScanner: React.FC = () => {
         </View>
       </View>
 
-      {/* Screen View tabs */}
+      {/* Screen View tabs with bouncy press feedbacks */}
       <View style={styles.tabBar}>
-        <TouchableOpacity
+        <ScalePress
           style={[styles.tabItem, activeTab === 'scan' && styles.tabActive]}
           onPress={() => setActiveTab('scan')}
-          activeOpacity={0.7}
         >
           <ScanIcon color={activeTab === 'scan' ? '#ff9f1c' : '#9ca3af'} />
           <Text style={[styles.tabText, activeTab === 'scan' && styles.tabTextActive]}>Scanner</Text>
-        </TouchableOpacity>
+        </ScalePress>
 
-        <TouchableOpacity
+        <ScalePress
           style={[styles.tabItem, activeTab === 'logs' && styles.tabActive]}
           onPress={() => setActiveTab('logs')}
-          activeOpacity={0.7}
         >
           <LogsIcon color={activeTab === 'logs' ? '#ff9f1c' : '#9ca3af'} />
           <Text style={[styles.tabText, activeTab === 'logs' && styles.tabTextActive]}>Ledger Logs</Text>
-        </TouchableOpacity>
+        </ScalePress>
 
-        <TouchableOpacity
+        <ScalePress
           style={[styles.tabItem, activeTab === 'security' && styles.tabActive]}
           onPress={() => setActiveTab('security')}
-          activeOpacity={0.7}
         >
           <ShieldIcon color={activeTab === 'security' ? '#ff9f1c' : '#9ca3af'} />
           <Text style={[styles.tabText, activeTab === 'security' && styles.tabTextActive]}>Security</Text>
-        </TouchableOpacity>
+        </ScalePress>
       </View>
 
       <ScrollView 
@@ -459,6 +550,13 @@ export const CameraScanner: React.FC = () => {
 
             {/* Circular Scanner viewport */}
             <View style={styles.scannerWrapper}>
+              {/* Absolute ambient backing glow */}
+              <View style={[
+                styles.ambientGlow,
+                statusColorVal.value === 1 && styles.glowEmerald,
+                statusColorVal.value === 2 && styles.glowRose,
+              ]} />
+
               {/* Geometric Corner Brackets */}
               <View style={[styles.bracket, styles.topLeftBracket]} />
               <View style={[styles.bracket, styles.topRightBracket]} />
@@ -487,9 +585,47 @@ export const CameraScanner: React.FC = () => {
               {/* Radial HUD rings overlay */}
               <View style={styles.hudOverlay} pointerEvents="none">
                 <Svg height="100%" width="100%" viewBox="0 0 100 100">
+                  {/* Detailed scopes and reticles */}
                   <Circle cx="50" cy="50" r="48" stroke="rgba(255, 255, 255, 0.05)" strokeWidth="0.5" fill="none" />
-                  <Circle cx="50" cy="50" r="44" stroke="rgba(255, 255, 255, 0.03)" strokeWidth="1" strokeDasharray="3 3" fill="none" />
+                  <Circle cx="50" cy="50" r="44" stroke="rgba(255, 255, 255, 0.03)" strokeWidth="0.8" strokeDasharray="3 3" fill="none" />
+                  <Circle cx="50" cy="50" r="28" stroke="rgba(255, 255, 255, 0.02)" strokeWidth="0.5" strokeDasharray="2 18" fill="none" />
+                  {/* Scope axis ticks */}
+                  <Line x1="50" y1="2" x2="50" y2="6" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="0.8" />
+                  <Line x1="50" y1="94" x2="50" y2="98" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="0.8" />
+                  <Line x1="2" y1="50" x2="6" y2="50" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="0.8" />
+                  <Line x1="94" y1="50" x2="98" y2="50" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="0.8" />
                 </Svg>
+              </View>
+
+              {/* Monospaced system telemetry HUD callouts */}
+              <View style={styles.hudTextContainerLeft} pointerEvents="none">
+                <Text style={styles.hudScopeText}>[ FRAME_PREPROC: CLAHE ]</Text>
+              </View>
+              <View style={styles.hudTextContainerRight} pointerEvents="none">
+                <Text style={styles.hudScopeText}>[ ENGINE: INT8_GPU ]</Text>
+              </View>
+            </View>
+
+            {/* Live Feature Extraction Stats Indicators */}
+            <View style={styles.liveTelemetryCard}>
+              <View style={styles.telemetryItem}>
+                <Text style={styles.telemetryVal}>{liveStats.ear.toFixed(3)}</Text>
+                <Text style={styles.telemetryLbl}>EAR (Eyes)</Text>
+              </View>
+              <View style={styles.telemetryDivider} />
+              <View style={styles.telemetryItem}>
+                <Text style={styles.telemetryVal}>{liveStats.mar.toFixed(3)}</Text>
+                <Text style={styles.telemetryLbl}>MAR (Mouth)</Text>
+              </View>
+              <View style={styles.telemetryDivider} />
+              <View style={styles.telemetryItem}>
+                <Text style={styles.telemetryVal}>{liveStats.yaw >= 0 ? `+${liveStats.yaw}°` : `${liveStats.yaw}°`}</Text>
+                <Text style={styles.telemetryLbl}>Yaw (Tilt)</Text>
+              </View>
+              <View style={styles.telemetryDivider} />
+              <View style={styles.telemetryItem}>
+                <Text style={styles.telemetryVal}>{liveStats.fps} Hz</Text>
+                <Text style={styles.telemetryLbl}>Tracking Rate</Text>
               </View>
             </View>
 
@@ -521,58 +657,54 @@ export const CameraScanner: React.FC = () => {
               <Text style={styles.panelSubtitle}>Simulate real-time camera frames and user actions</Text>
               
               <View style={styles.gridRow}>
-                <TouchableOpacity 
+                <ScalePress 
                   style={[
                     styles.actionCard, 
                     challengesList[activeChallengeIdx] !== 'BLINK' && styles.actionCardDisabled
                   ]} 
                   onPress={() => handleSimulateFrameUpdate('BLINK_OK')}
                   disabled={challengesList[activeChallengeIdx] !== 'BLINK'}
-                  activeOpacity={0.7}
                 >
                   <View style={[styles.cardDot, challengesList[activeChallengeIdx] === 'BLINK' && styles.cardDotActive]} />
                   <Text style={styles.actionCardTitle}>Blink Eyes</Text>
                   <Text style={styles.actionCardDesc}>Simulate low Eye Aspect Ratio (EAR)</Text>
-                </TouchableOpacity>
+                </ScalePress>
 
-                <TouchableOpacity 
+                <ScalePress 
                   style={[
                     styles.actionCard, 
                     challengesList[activeChallengeIdx] !== 'SMILE' && styles.actionCardDisabled
                   ]} 
                   onPress={() => handleSimulateFrameUpdate('SMILE_OK')}
                   disabled={challengesList[activeChallengeIdx] !== 'SMILE'}
-                  activeOpacity={0.7}
                 >
                   <View style={[styles.cardDot, challengesList[activeChallengeIdx] === 'SMILE' && styles.cardDotActive]} />
                   <Text style={styles.actionCardTitle}>Smile Gesture</Text>
                   <Text style={styles.actionCardDesc}>Simulate Mouth Aspect Ratio (MAR) shift</Text>
-                </TouchableOpacity>
+                </ScalePress>
               </View>
 
               <View style={styles.gridRow}>
-                <TouchableOpacity 
+                <ScalePress 
                   style={[
                     styles.actionCard, 
                     challengesList[activeChallengeIdx] !== 'TURN_LEFT' && styles.actionCardDisabled
                   ]} 
                   onPress={() => handleSimulateFrameUpdate('TURN_OK')}
                   disabled={challengesList[activeChallengeIdx] !== 'TURN_LEFT'}
-                  activeOpacity={0.7}
                 >
                   <View style={[styles.cardDot, challengesList[activeChallengeIdx] === 'TURN_LEFT' && styles.cardDotActive]} />
                   <Text style={styles.actionCardTitle}>Turn Left</Text>
                   <Text style={styles.actionCardDesc}>Simulate Yaw rotation angle estimation</Text>
-                </TouchableOpacity>
+                </ScalePress>
 
-                <TouchableOpacity 
+                <ScalePress 
                   style={[styles.actionCard, styles.resetCard]} 
                   onPress={handleResetVerification}
-                  activeOpacity={0.7}
                 >
                   <Text style={[styles.actionCardTitle, { color: '#ff9f1c' }]}>Reset Scan</Text>
                   <Text style={styles.actionCardDesc}>Purge tracking baselines and regenerate list</Text>
-                </TouchableOpacity>
+                </ScalePress>
               </View>
             </View>
           </View>
@@ -608,53 +740,76 @@ export const CameraScanner: React.FC = () => {
                   <Text style={styles.emptySubtext}>Perform scanner loops to record new tamper-proof logs.</Text>
                 </View>
               ) : (
-                logsList.map((log, index) => {
-                  const isVerified = log.status === 'VERIFIED';
-                  return (
-                    <View key={log.id} style={styles.secureLogCard}>
-                      <View style={styles.secureLogHeader}>
-                        <View style={styles.blockBadge}>
-                          <Text style={styles.blockBadgeText}>BLOCK #{logsList.length - index}</Text>
+                <View style={styles.timelineWrapper}>
+                  {/* Vertical dotted connector timeline line representing block chain connections */}
+                  <View style={styles.verticalTimelineBar} />
+                  
+                  {logsList.map((log, index) => {
+                    const isVerified = log.status === 'VERIFIED';
+                    return (
+                      <View key={log.id} style={styles.timelineItemRow}>
+                        
+                        {/* Timeline Node Connector Indicator */}
+                        <View style={styles.timelineIndicatorNode}>
+                          <View style={[
+                            styles.timelineNodePoint, 
+                            isVerified ? styles.nodePointGreen : styles.nodePointRed
+                          ]} />
+                          {index < logsList.length - 1 && <View style={styles.linkChainLine} />}
                         </View>
-                        <View style={[styles.statusIndicator, isVerified ? styles.statusIncGreen : styles.statusIncRed]}>
-                          <Text style={isVerified ? styles.statusTextGreen : styles.statusTextRed}>
-                            {log.status}
-                          </Text>
-                        </View>
-                      </View>
 
-                      <View style={styles.logMetaDetails}>
-                        <View style={styles.detailRow}>
-                          <Text style={styles.detailTitle}>Personnel ID:</Text>
-                          <Text style={styles.detailVal}>{log.userId}</Text>
-                        </View>
-                        <View style={styles.detailRow}>
-                          <Text style={styles.detailTitle}>Timestamp:</Text>
-                          <Text style={styles.detailVal}>{new Date(log.timestamp).toLocaleTimeString()}</Text>
-                        </View>
-                        <View style={styles.detailRow}>
-                          <Text style={styles.detailTitle}>Coordinates:</Text>
-                          <Text style={styles.detailVal}>{log.latitude.toFixed(5)}, {log.longitude.toFixed(5)}</Text>
-                        </View>
-                        <View style={styles.detailRow}>
-                          <Text style={styles.detailTitle}>Similarity Match:</Text>
-                          <Text style={styles.detailVal}>{(log.confidence * 100).toFixed(1)}%</Text>
-                        </View>
-                      </View>
+                        <View style={styles.secureLogCard}>
+                          <View style={styles.secureLogHeader}>
+                            <View style={styles.blockBadge}>
+                              <Text style={styles.blockBadgeText}>BLOCK #{logsList.length - index}</Text>
+                            </View>
+                            
+                            <View style={styles.ledgerTimestampRow}>
+                              <LockIcon color="rgba(255, 255, 255, 0.3)" />
+                              <Text style={styles.blockTimestampText}>Deterministically Signed</Text>
+                            </View>
 
-                      <View style={styles.hashChainWrapper}>
-                        <View style={styles.hashRow}>
-                          <Text style={styles.hashLabel}>PREV_HASH:</Text>
-                          <Text style={styles.hashText} numberOfLines={1} ellipsizeMode="middle">{log.prevHash}</Text>
-                        </View>
-                        <View style={[styles.hashRow, { borderTopWidth: 0.5, borderTopColor: 'rgba(255, 255, 255, 0.05)' }]}>
-                          <Text style={styles.hashLabel}>BLOCK_HASH:</Text>
-                          <Text style={[styles.hashText, { color: '#60a5fa' }]} numberOfLines={1} ellipsizeMode="middle">{log.hash}</Text>
+                            <View style={[styles.statusIndicator, isVerified ? styles.statusIncGreen : styles.statusIncRed]}>
+                              <Text style={isVerified ? styles.statusTextGreen : styles.statusTextRed}>
+                                {log.status}
+                              </Text>
+                            </View>
+                          </View>
+
+                          <View style={styles.logMetaDetails}>
+                            <View style={styles.detailRow}>
+                              <Text style={styles.detailTitle}>Personnel ID:</Text>
+                              <Text style={styles.detailVal}>{log.userId}</Text>
+                            </View>
+                            <View style={styles.detailRow}>
+                              <Text style={styles.detailTitle}>Timestamp:</Text>
+                              <Text style={styles.detailVal}>{new Date(log.timestamp).toLocaleTimeString()}</Text>
+                            </View>
+                            <View style={styles.detailRow}>
+                              <Text style={styles.detailTitle}>Coordinates:</Text>
+                              <Text style={styles.detailVal}>{log.latitude.toFixed(5)}, {log.longitude.toFixed(5)}</Text>
+                            </View>
+                            <View style={styles.detailRow}>
+                              <Text style={styles.detailTitle}>Similarity Match:</Text>
+                              <Text style={styles.detailVal}>{(log.confidence * 100).toFixed(1)}%</Text>
+                            </View>
+                          </View>
+
+                          <View style={styles.hashChainWrapper}>
+                            <View style={styles.hashRow}>
+                              <Text style={styles.hashLabel}>PREV_HASH:</Text>
+                              <Text style={styles.hashText} numberOfLines={1} ellipsizeMode="middle">{log.prevHash}</Text>
+                            </View>
+                            <View style={[styles.hashRow, { borderTopWidth: 0.5, borderTopColor: 'rgba(255, 255, 255, 0.05)' }]}>
+                              <Text style={styles.hashLabel}>BLOCK_HASH:</Text>
+                              <Text style={[styles.hashText, { color: '#60a5fa' }]} numberOfLines={1} ellipsizeMode="middle">{log.hash}</Text>
+                            </View>
+                          </View>
                         </View>
                       </View>
-                    </View>
-                  );
-                })
+                    );
+                  })}
+                </View>
               )}
             </View>
           </View>
@@ -677,10 +832,9 @@ export const CameraScanner: React.FC = () => {
             <View style={styles.controlBox}>
               <Text style={styles.controlBoxHeader}>LEDGER SYSTEM TESTS</Text>
               
-              <TouchableOpacity 
+              <ScalePress 
                 style={[styles.securityActionRow, styles.rowGreen]} 
                 onPress={handleVerifyChain}
-                activeOpacity={0.8}
               >
                 <View style={styles.rowIconArea}>
                   <ShieldIcon color="#10b981" />
@@ -689,12 +843,11 @@ export const CameraScanner: React.FC = () => {
                   <Text style={styles.rowActionTitle}>Integrity Self-Test</Text>
                   <Text style={styles.rowActionDesc}>Re-run complete SHA-256 validation checks on all historical log blocks.</Text>
                 </View>
-              </TouchableOpacity>
+              </ScalePress>
 
-              <TouchableOpacity 
+              <ScalePress 
                 style={[styles.securityActionRow, styles.rowRed]} 
                 onPress={handleCorruptLedger}
-                activeOpacity={0.8}
               >
                 <View style={styles.rowIconArea}>
                   <Svg width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -705,7 +858,7 @@ export const CameraScanner: React.FC = () => {
                   <Text style={styles.rowActionTitle}>Inject DB Corruption</Text>
                   <Text style={styles.rowActionDesc}>Sideload invalid User data inside local database history to simulate tampering.</Text>
                 </View>
-              </TouchableOpacity>
+              </ScalePress>
             </View>
 
             {/* Cloud connectivity operations */}
@@ -717,13 +870,12 @@ export const CameraScanner: React.FC = () => {
                 <Text style={styles.syncStateSub}>{syncStatusMsg}</Text>
               </View>
 
-              <TouchableOpacity 
+              <ScalePress 
                 style={styles.primarySyncButton} 
                 onPress={handleTriggerSync}
-                activeOpacity={0.8}
               >
                 <Text style={styles.primarySyncText}>Sync Queue & Purge Cache</Text>
-              </TouchableOpacity>
+              </ScalePress>
             </View>
           </View>
         )}
@@ -735,7 +887,7 @@ export const CameraScanner: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#070a13', // Deep slate premium dark background
+    backgroundColor: '#060913', // Deep premium slate black background
   },
   appHeader: {
     paddingHorizontal: 20,
@@ -745,8 +897,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
-    backgroundColor: '#080d1a',
+    borderBottomColor: 'rgba(255, 255, 255, 0.04)',
+    backgroundColor: '#070c19',
   },
   appTitle: {
     fontSize: 18,
@@ -767,7 +919,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   latencyBadge: {
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 6,
@@ -785,7 +937,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 6,
     borderWidth: 0.5,
-    borderColor: 'rgba(255, 159, 28, 0.25)',
+    borderColor: 'rgba(255, 159, 28, 0.22)',
   },
   statusDot: {
     width: 6,
@@ -801,10 +953,10 @@ const styles = StyleSheet.create({
   },
   tabBar: {
     flexDirection: 'row',
-    backgroundColor: '#080d1a',
+    backgroundColor: '#070c19',
     paddingHorizontal: 10,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+    borderBottomColor: 'rgba(255, 255, 255, 0.04)',
   },
   tabItem: {
     flex: 1,
@@ -856,9 +1008,9 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
     borderRadius: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 2,
@@ -866,6 +1018,11 @@ const styles = StyleSheet.create({
   trackerCircleActive: {
     borderColor: '#ff9f1c',
     backgroundColor: 'rgba(255, 159, 28, 0.15)',
+    shadowColor: '#ff9f1c',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   trackerCircleDone: {
     borderColor: '#10b981',
@@ -900,7 +1057,7 @@ const styles = StyleSheet.create({
     right: 12,
     top: 12,
     height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
     zIndex: 1,
   },
   trackerLineDone: {
@@ -914,7 +1071,21 @@ const styles = StyleSheet.create({
     position: 'relative',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 24,
+    marginBottom: 20,
+  },
+  ambientGlow: {
+    position: 'absolute',
+    width: SCAN_RING_SIZE - 20,
+    height: SCAN_RING_SIZE - 20,
+    borderRadius: (SCAN_RING_SIZE - 20) / 2,
+    backgroundColor: 'rgba(255, 159, 28, 0.03)',
+    zIndex: 0,
+  },
+  glowEmerald: {
+    backgroundColor: 'rgba(16, 185, 129, 0.04)',
+  },
+  glowRose: {
+    backgroundColor: 'rgba(244, 63, 94, 0.04)',
   },
   scanRing: {
     width: SCAN_RING_SIZE,
@@ -924,10 +1095,10 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#03050c',
+    backgroundColor: '#020409',
     elevation: 12,
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.25,
     shadowRadius: 16,
   },
   camera: {
@@ -937,7 +1108,7 @@ const styles = StyleSheet.create({
   cameraPlaceholder: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#0c0f1d',
+    backgroundColor: '#0a0d17',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -967,7 +1138,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     width: 22,
     height: 22,
-    borderColor: 'rgba(255, 255, 255, 0.25)',
+    borderColor: 'rgba(255, 255, 255, 0.2)',
     zIndex: 10,
   },
   topLeftBracket: {
@@ -994,17 +1165,76 @@ const styles = StyleSheet.create({
     borderBottomWidth: 2,
     borderRightWidth: 2,
   },
+  hudTextContainerLeft: {
+    position: 'absolute',
+    bottom: 8,
+    left: -32,
+    zIndex: 11,
+  },
+  hudTextContainerRight: {
+    position: 'absolute',
+    bottom: 8,
+    right: -32,
+    zIndex: 11,
+  },
+  hudScopeText: {
+    color: 'rgba(255, 255, 255, 0.15)',
+    fontSize: 7,
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+    fontWeight: '600',
+  },
+
+  // Live Feature Extraction Stats Indicator
+  liveTelemetryCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+    backgroundColor: 'rgba(255, 255, 255, 0.015)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.03)',
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    marginBottom: 20,
+  },
+  telemetryItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  telemetryVal: {
+    fontSize: 12,
+    fontWeight: '900',
+    color: '#ffffff',
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+  },
+  telemetryLbl: {
+    fontSize: 8,
+    color: '#6b7280',
+    fontWeight: '700',
+    marginTop: 2,
+    textTransform: 'uppercase',
+  },
+  telemetryDivider: {
+    width: 0.5,
+    height: '100%',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  },
 
   // Glassmorphic prompt card
   glassMessageCard: {
     width: '100%',
-    backgroundColor: 'rgba(16, 24, 48, 0.75)',
+    backgroundColor: 'rgba(12, 18, 38, 0.85)',
     borderRadius: 18,
     padding: 18,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
+    borderColor: 'rgba(255, 255, 255, 0.04)',
     alignItems: 'center',
     marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 5,
   },
   hudText: {
     fontSize: 15,
@@ -1020,7 +1250,7 @@ const styles = StyleSheet.create({
   progressBarBg: {
     width: '100%',
     height: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderRadius: 2,
     overflow: 'hidden',
     marginBottom: 10,
@@ -1049,9 +1279,9 @@ const styles = StyleSheet.create({
   // Control Actions layout
   actionPanel: {
     width: '100%',
-    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+    backgroundColor: 'rgba(255, 255, 255, 0.015)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.04)',
+    borderColor: 'rgba(255, 255, 255, 0.03)',
     borderRadius: 20,
     padding: 16,
   },
@@ -1075,11 +1305,11 @@ const styles = StyleSheet.create({
   },
   actionCard: {
     flex: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    backgroundColor: 'rgba(255, 255, 255, 0.025)',
     borderRadius: 12,
     padding: 14,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
+    borderColor: 'rgba(255, 255, 255, 0.04)',
   },
   actionCardDisabled: {
     opacity: 0.35,
@@ -1092,7 +1322,7 @@ const styles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
     position: 'absolute',
     top: 14,
     right: 14,
@@ -1121,9 +1351,9 @@ const styles = StyleSheet.create({
   },
   metaBox: {
     flex: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+    backgroundColor: 'rgba(255, 255, 255, 0.015)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.04)',
+    borderColor: 'rgba(255, 255, 255, 0.03)',
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: 'center',
@@ -1142,6 +1372,55 @@ const styles = StyleSheet.create({
   },
   logListContainer: {
     width: '100%',
+  },
+  timelineWrapper: {
+    position: 'relative',
+    width: '100%',
+    paddingLeft: 12,
+  },
+  verticalTimelineBar: {
+    position: 'absolute',
+    top: 12,
+    bottom: 24,
+    left: 20,
+    width: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderStyle: 'dashed',
+  },
+  timelineItemRow: {
+    flexDirection: 'row',
+    width: '100%',
+    marginBottom: 16,
+  },
+  timelineIndicatorNode: {
+    width: 20,
+    alignItems: 'center',
+    marginRight: 10,
+    marginTop: 18,
+  },
+  timelineNodePoint: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#ff9f1c',
+    zIndex: 3,
+  },
+  nodePointGreen: {
+    backgroundColor: '#10b981',
+    shadowColor: '#10b981',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 4,
+  },
+  nodePointRed: {
+    backgroundColor: '#f43f5e',
+    shadowColor: '#f43f5e',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 4,
+  },
+  linkChainLine: {
+    // Spacer element
   },
   sectionHeaderTitle: {
     fontSize: 11,
@@ -1172,12 +1451,12 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   secureLogCard: {
-    backgroundColor: '#0b1122',
+    flex: 1,
+    backgroundColor: '#0a0e1b',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.04)',
+    borderColor: 'rgba(255, 255, 255, 0.03)',
     borderRadius: 14,
     padding: 14,
-    marginBottom: 12,
   },
   secureLogHeader: {
     flexDirection: 'row',
@@ -1185,11 +1464,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 12,
     borderBottomWidth: 0.5,
-    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+    borderBottomColor: 'rgba(255, 255, 255, 0.04)',
     paddingBottom: 8,
   },
   blockBadge: {
-    backgroundColor: 'rgba(96, 165, 250, 0.1)',
+    backgroundColor: 'rgba(96, 165, 250, 0.08)',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
@@ -1197,7 +1476,17 @@ const styles = StyleSheet.create({
   blockBadgeText: {
     color: '#60a5fa',
     fontSize: 9,
-    fontWeight: '950',
+    fontWeight: '900',
+  },
+  ledgerTimestampRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  blockTimestampText: {
+    fontSize: 8,
+    color: 'rgba(255, 255, 255, 0.35)',
+    fontWeight: '600',
   },
   statusIndicator: {
     paddingHorizontal: 8,
@@ -1205,20 +1494,20 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   statusIncGreen: {
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
   },
   statusIncRed: {
-    backgroundColor: 'rgba(244, 63, 94, 0.1)',
+    backgroundColor: 'rgba(244, 63, 94, 0.08)',
   },
   statusTextGreen: {
     color: '#10b981',
     fontSize: 9,
-    fontWeight: '950',
+    fontWeight: '900',
   },
   statusTextRed: {
     color: '#f43f5e',
     fontSize: 9,
-    fontWeight: '950',
+    fontWeight: '900',
   },
   logMetaDetails: {
     gap: 6,
@@ -1239,7 +1528,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   hashChainWrapper: {
-    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+    backgroundColor: 'rgba(0, 0, 0, 0.15)',
     borderRadius: 8,
     padding: 8,
     gap: 4,
@@ -1265,8 +1554,8 @@ const styles = StyleSheet.create({
   // Security view layout
   securityHighlightCard: {
     width: '100%',
-    backgroundColor: 'rgba(255, 159, 28, 0.03)',
-    borderColor: 'rgba(255, 159, 28, 0.08)',
+    backgroundColor: 'rgba(255, 159, 28, 0.02)',
+    borderColor: 'rgba(255, 159, 28, 0.06)',
     borderWidth: 1,
     borderRadius: 20,
     padding: 20,
@@ -1277,7 +1566,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: 'rgba(255, 159, 28, 0.1)',
+    backgroundColor: 'rgba(255, 159, 28, 0.08)',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 14,
@@ -1297,10 +1586,10 @@ const styles = StyleSheet.create({
   },
   controlBox: {
     width: '100%',
-    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+    backgroundColor: 'rgba(255, 255, 255, 0.015)',
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.04)',
+    borderColor: 'rgba(255, 255, 255, 0.03)',
     padding: 16,
     marginBottom: 20,
   },
@@ -1313,27 +1602,27 @@ const styles = StyleSheet.create({
   },
   securityActionRow: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+    backgroundColor: 'rgba(255, 255, 255, 0.015)',
     borderRadius: 14,
     padding: 14,
     alignItems: 'center',
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.04)',
+    borderColor: 'rgba(255, 255, 255, 0.03)',
   },
   rowGreen: {
-    borderColor: 'rgba(16, 185, 129, 0.15)',
+    borderColor: 'rgba(16, 185, 129, 0.12)',
     backgroundColor: 'rgba(16, 185, 129, 0.02)',
   },
   rowRed: {
-    borderColor: 'rgba(244, 63, 94, 0.15)',
+    borderColor: 'rgba(244, 63, 94, 0.12)',
     backgroundColor: 'rgba(244, 63, 94, 0.02)',
   },
   rowIconArea: {
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -1353,7 +1642,7 @@ const styles = StyleSheet.create({
     lineHeight: 14,
   },
   syncStateDisplay: {
-    backgroundColor: 'rgba(0, 0, 0, 0.25)',
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
     borderRadius: 12,
     padding: 12,
     marginBottom: 14,
