@@ -31,9 +31,10 @@ import { SyncManagerService } from '../services/syncManager';
 import { LocalDatabaseService, EnrolledUser, AuditLog } from '../services/databaseSchema';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const SCAN_RING_SIZE = SCREEN_WIDTH * 0.68;
+// Responsive scanner ring: 68% of screen width, capped at 280px max for tablets
+const SCAN_RING_SIZE = Math.min(SCREEN_WIDTH * 0.68, 280);
 
-// Custom Inline SVG Icons for Premium Interface
+// Custom Inline SVG Icons
 const ScanIcon = ({ color }: { color: string }) => (
   <Svg width="18" height="18" viewBox="0 0 24 24" fill="none">
     <Path d="M9 3H5a2 2 0 00-2 2v4m16-6h-4a2 2 0 00-2 2v0m6 6v-4a2 2 0 00-2-2m-8 16H5a2 2 0 01-2-2v-4m16 6h-4a2 2 0 01-2-2m-3-6a3 3 0 11-6 0 3 3 0 016 0z" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
@@ -471,7 +472,7 @@ export const CameraScanner: React.FC = () => {
         </View>
       </View>
 
-      {/* Screen View tabs with bouncy press feedbacks */}
+      {/* Screen View tabs with bouncy press feedbacks - Responsive Column Stacking */}
       <View style={styles.tabBar}>
         <ScalePress
           style={[styles.tabItem, activeTab === 'scan' && styles.tabActive]}
@@ -502,383 +503,383 @@ export const CameraScanner: React.FC = () => {
         contentContainerStyle={styles.scrollContent} 
         showsVerticalScrollIndicator={false}
       >
-        {activeTab === 'scan' && (
-          <View style={styles.tabContent}>
-            
-            {/* Liveness Challenge Progress Track (Pill Steps) */}
-            <View style={styles.trackerRow}>
-              {challengesList.map((item, idx) => {
-                const isCompleted = idx < activeChallengeIdx;
-                const isActive = idx === activeChallengeIdx;
-                const label = item === 'TURN_LEFT' ? 'TURN' : item;
-                
-                return (
-                  <View key={item} style={styles.trackerStepWrapper}>
-                    <View style={[
-                      styles.trackerCircle,
-                      isCompleted && styles.trackerCircleDone,
-                      isActive && styles.trackerCircleActive,
-                    ]}>
-                      {isCompleted ? (
-                        <CheckIcon color="#ffffff" />
-                      ) : (
-                        <Text style={[
-                          styles.trackerIndexText,
-                          isActive && styles.trackerIndexTextActive
-                        ]}>
-                          {idx + 1}
-                        </Text>
+        {/* Constrain layout to responsive, centered column for large screens/tablets */}
+        <View style={styles.layoutWrapper}>
+          
+          {activeTab === 'scan' && (
+            <View style={styles.tabContent}>
+              
+              {/* Liveness Challenge Progress Track (Pill Steps) */}
+              <View style={styles.trackerRow}>
+                {challengesList.map((item, idx) => {
+                  const isCompleted = idx < activeChallengeIdx;
+                  const isActive = idx === activeChallengeIdx;
+                  const label = item === 'TURN_LEFT' ? 'TURN' : item;
+                  
+                  return (
+                    <View key={item} style={styles.trackerStepWrapper}>
+                      <View style={[
+                        styles.trackerCircle,
+                        isCompleted && styles.trackerCircleDone,
+                        isActive && styles.trackerCircleActive,
+                      ]}>
+                        {isCompleted ? (
+                          <CheckIcon color="#ffffff" />
+                        ) : (
+                          <Text style={[
+                            styles.trackerIndexText,
+                            isActive && styles.trackerIndexTextActive
+                          ]}>
+                            {idx + 1}
+                          </Text>
+                        )}
+                      </View>
+                      <Text style={[
+                        styles.trackerLabel,
+                        isActive && styles.trackerLabelActive,
+                        isCompleted && styles.trackerLabelDone
+                      ]}>
+                        {label}
+                      </Text>
+                      {idx < challengesList.length - 1 && (
+                        <View style={[
+                          styles.trackerLine,
+                          idx < activeChallengeIdx && styles.trackerLineDone
+                        ]} />
                       )}
                     </View>
-                    <Text style={[
-                      styles.trackerLabel,
-                      isActive && styles.trackerLabelActive,
-                      isCompleted && styles.trackerLabelDone
-                    ]}>
-                      {label}
-                    </Text>
-                    {idx < challengesList.length - 1 && (
-                      <View style={[
-                        styles.trackerLine,
-                        idx < activeChallengeIdx && styles.trackerLineDone
-                      ]} />
-                    )}
-                  </View>
-                );
-              })}
-            </View>
-
-            {/* Circular Scanner viewport */}
-            <View style={styles.scannerWrapper}>
-              {/* Absolute ambient backing glow */}
-              <View style={[
-                styles.ambientGlow,
-                statusColorVal.value === 1 && styles.glowEmerald,
-                statusColorVal.value === 2 && styles.glowRose,
-              ]} />
-
-              {/* Geometric Corner Brackets */}
-              <View style={[styles.bracket, styles.topLeftBracket]} />
-              <View style={[styles.bracket, styles.topRightBracket]} />
-              <View style={[styles.bracket, styles.bottomLeftBracket]} />
-              <View style={[styles.bracket, styles.bottomRightBracket]} />
-
-              <Animated.View style={[styles.scanRing, animatedRingStyle]}>
-                {device && camera ? (
-                  <Camera
-                    style={styles.camera}
-                    device={device}
-                    isActive={true}
-                    photo={false}
-                  />
-                ) : (
-                  <View style={styles.cameraPlaceholder}>
-                    <ActivityIndicator size="large" color="#ff9f1c" />
-                    <Text style={styles.placeholderText}>Camera Feed Offline</Text>
-                  </View>
-                )}
-                
-                {/* Laser Scanning Line */}
-                <Animated.View style={[styles.laserScanLine, animatedScanLineStyle]} />
-              </Animated.View>
-              
-              {/* Radial HUD rings overlay */}
-              <View style={styles.hudOverlay} pointerEvents="none">
-                <Svg height="100%" width="100%" viewBox="0 0 100 100">
-                  {/* Detailed scopes and reticles */}
-                  <Circle cx="50" cy="50" r="48" stroke="rgba(255, 255, 255, 0.05)" strokeWidth="0.5" fill="none" />
-                  <Circle cx="50" cy="50" r="44" stroke="rgba(255, 255, 255, 0.03)" strokeWidth="0.8" strokeDasharray="3 3" fill="none" />
-                  <Circle cx="50" cy="50" r="28" stroke="rgba(255, 255, 255, 0.02)" strokeWidth="0.5" strokeDasharray="2 18" fill="none" />
-                  {/* Scope axis ticks */}
-                  <Line x1="50" y1="2" x2="50" y2="6" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="0.8" />
-                  <Line x1="50" y1="94" x2="50" y2="98" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="0.8" />
-                  <Line x1="2" y1="50" x2="6" y2="50" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="0.8" />
-                  <Line x1="94" y1="50" x2="98" y2="50" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="0.8" />
-                </Svg>
+                  );
+                })}
               </View>
 
-              {/* Monospaced system telemetry HUD callouts */}
-              <View style={styles.hudTextContainerLeft} pointerEvents="none">
-                <Text style={styles.hudScopeText}>[ FRAME_PREPROC: CLAHE ]</Text>
-              </View>
-              <View style={styles.hudTextContainerRight} pointerEvents="none">
-                <Text style={styles.hudScopeText}>[ ENGINE: INT8_GPU ]</Text>
-              </View>
-            </View>
+              {/* Circular Scanner viewport */}
+              <View style={styles.scannerWrapper}>
+                {/* Absolute ambient backing glow */}
+                <View style={[
+                  styles.ambientGlow,
+                  statusColorVal.value === 1 && styles.glowEmerald,
+                  statusColorVal.value === 2 && styles.glowRose,
+                ]} />
 
-            {/* Live Feature Extraction Stats Indicators */}
-            <View style={styles.liveTelemetryCard}>
-              <View style={styles.telemetryItem}>
-                <Text style={styles.telemetryVal}>{liveStats.ear.toFixed(3)}</Text>
-                <Text style={styles.telemetryLbl}>EAR (Eyes)</Text>
-              </View>
-              <View style={styles.telemetryDivider} />
-              <View style={styles.telemetryItem}>
-                <Text style={styles.telemetryVal}>{liveStats.mar.toFixed(3)}</Text>
-                <Text style={styles.telemetryLbl}>MAR (Mouth)</Text>
-              </View>
-              <View style={styles.telemetryDivider} />
-              <View style={styles.telemetryItem}>
-                <Text style={styles.telemetryVal}>{liveStats.yaw >= 0 ? `+${liveStats.yaw}°` : `${liveStats.yaw}°`}</Text>
-                <Text style={styles.telemetryLbl}>Yaw (Tilt)</Text>
-              </View>
-              <View style={styles.telemetryDivider} />
-              <View style={styles.telemetryItem}>
-                <Text style={styles.telemetryVal}>{liveStats.fps} Hz</Text>
-                <Text style={styles.telemetryLbl}>Tracking Rate</Text>
-              </View>
-            </View>
+                {/* Geometric Corner Brackets */}
+                <View style={[styles.bracket, styles.topLeftBracket]} />
+                <View style={[styles.bracket, styles.topRightBracket]} />
+                <View style={[styles.bracket, styles.bottomLeftBracket]} />
+                <View style={[styles.bracket, styles.bottomRightBracket]} />
 
-            {/* Message HUD Panel */}
-            <View style={styles.glassMessageCard}>
-              <Animated.Text style={[styles.hudText, animatedMessageStyle]}>
-                {challengeState.message}
-              </Animated.Text>
-              
-              {/* Smooth Progress Indicators */}
-              <View style={styles.progressContainer}>
-                <View style={styles.progressBarBg}>
-                  <Animated.View style={[styles.progressBarFill, animatedProgressStyle]} />
-                </View>
-                <View style={styles.progressMetrics}>
-                  <Text style={styles.progressText}>
-                    CHALLENGE: {challengeState.currentChallenge}
-                  </Text>
-                  <Text style={styles.progressPct}>
-                    {Math.round(challengeState.progress * 100)}%
-                  </Text>
-                </View>
-              </View>
-            </View>
-
-            {/* Simulated Frame Action Buttons */}
-            <View style={styles.actionPanel}>
-              <Text style={styles.panelTitle}>DIAGNOSTIC TEST CONTROLS</Text>
-              <Text style={styles.panelSubtitle}>Simulate real-time camera frames and user actions</Text>
-              
-              <View style={styles.gridRow}>
-                <ScalePress 
-                  style={[
-                    styles.actionCard, 
-                    challengesList[activeChallengeIdx] !== 'BLINK' && styles.actionCardDisabled
-                  ]} 
-                  onPress={() => handleSimulateFrameUpdate('BLINK_OK')}
-                  disabled={challengesList[activeChallengeIdx] !== 'BLINK'}
-                >
-                  <View style={[styles.cardDot, challengesList[activeChallengeIdx] === 'BLINK' && styles.cardDotActive]} />
-                  <Text style={styles.actionCardTitle}>Blink Eyes</Text>
-                  <Text style={styles.actionCardDesc}>Simulate low Eye Aspect Ratio (EAR)</Text>
-                </ScalePress>
-
-                <ScalePress 
-                  style={[
-                    styles.actionCard, 
-                    challengesList[activeChallengeIdx] !== 'SMILE' && styles.actionCardDisabled
-                  ]} 
-                  onPress={() => handleSimulateFrameUpdate('SMILE_OK')}
-                  disabled={challengesList[activeChallengeIdx] !== 'SMILE'}
-                >
-                  <View style={[styles.cardDot, challengesList[activeChallengeIdx] === 'SMILE' && styles.cardDotActive]} />
-                  <Text style={styles.actionCardTitle}>Smile Gesture</Text>
-                  <Text style={styles.actionCardDesc}>Simulate Mouth Aspect Ratio (MAR) shift</Text>
-                </ScalePress>
-              </View>
-
-              <View style={styles.gridRow}>
-                <ScalePress 
-                  style={[
-                    styles.actionCard, 
-                    challengesList[activeChallengeIdx] !== 'TURN_LEFT' && styles.actionCardDisabled
-                  ]} 
-                  onPress={() => handleSimulateFrameUpdate('TURN_OK')}
-                  disabled={challengesList[activeChallengeIdx] !== 'TURN_LEFT'}
-                >
-                  <View style={[styles.cardDot, challengesList[activeChallengeIdx] === 'TURN_LEFT' && styles.cardDotActive]} />
-                  <Text style={styles.actionCardTitle}>Turn Left</Text>
-                  <Text style={styles.actionCardDesc}>Simulate Yaw rotation angle estimation</Text>
-                </ScalePress>
-
-                <ScalePress 
-                  style={[styles.actionCard, styles.resetCard]} 
-                  onPress={handleResetVerification}
-                >
-                  <Text style={[styles.actionCardTitle, { color: '#ff9f1c' }]}>Reset Scan</Text>
-                  <Text style={styles.actionCardDesc}>Purge tracking baselines and regenerate list</Text>
-                </ScalePress>
-              </View>
-            </View>
-          </View>
-        )}
-
-        {activeTab === 'logs' && (
-          <View style={styles.tabContent}>
-            <View style={styles.logsMetaRow}>
-              <View style={styles.metaBox}>
-                <Text style={styles.metaVal}>{logsList.length}</Text>
-                <Text style={styles.metaLbl}>Total Logs</Text>
-              </View>
-              <View style={styles.metaBox}>
-                <Text style={styles.metaVal}>
-                  {logsList.filter(l => l.status === 'VERIFIED').length}
-                </Text>
-                <Text style={styles.metaLbl}>Verified</Text>
-              </View>
-              <View style={styles.metaBox}>
-                <Text style={[styles.metaVal, { color: '#f43f5e' }]}>
-                  {logsList.filter(l => l.status === 'FAILED').length}
-                </Text>
-                <Text style={styles.metaLbl}>Rejections</Text>
-              </View>
-            </View>
-
-            {/* List of ledger transaction blocks */}
-            <View style={styles.logListContainer}>
-              <Text style={styles.sectionHeaderTitle}>SECURE HASH-CHAIN RECORDS</Text>
-              {logsList.length === 0 ? (
-                <View style={styles.emptyContainer}>
-                  <Text style={styles.emptyText}>No ledger logs recorded in local memory yet.</Text>
-                  <Text style={styles.emptySubtext}>Perform scanner loops to record new tamper-proof logs.</Text>
-                </View>
-              ) : (
-                <View style={styles.timelineWrapper}>
-                  {/* Vertical dotted connector timeline line representing block chain connections */}
-                  <View style={styles.verticalTimelineBar} />
+                <Animated.View style={[styles.scanRing, animatedRingStyle]}>
+                  {device && camera ? (
+                    <Camera
+                      style={styles.camera}
+                      device={device}
+                      isActive={true}
+                      photo={false}
+                    />
+                  ) : (
+                    <View style={styles.cameraPlaceholder}>
+                      <ActivityIndicator size="large" color="#ff9f1c" />
+                      <Text style={styles.placeholderText}>Camera Feed Offline</Text>
+                    </View>
+                  )}
                   
-                  {logsList.map((log, index) => {
-                    const isVerified = log.status === 'VERIFIED';
-                    return (
-                      <View key={log.id} style={styles.timelineItemRow}>
-                        
-                        {/* Timeline Node Connector Indicator */}
-                        <View style={styles.timelineIndicatorNode}>
-                          <View style={[
-                            styles.timelineNodePoint, 
-                            isVerified ? styles.nodePointGreen : styles.nodePointRed
-                          ]} />
-                          {index < logsList.length - 1 && <View style={styles.linkChainLine} />}
-                        </View>
-
-                        <View style={styles.secureLogCard}>
-                          <View style={styles.secureLogHeader}>
-                            <View style={styles.blockBadge}>
-                              <Text style={styles.blockBadgeText}>BLOCK #{logsList.length - index}</Text>
-                            </View>
-                            
-                            <View style={styles.ledgerTimestampRow}>
-                              <LockIcon color="rgba(255, 255, 255, 0.3)" />
-                              <Text style={styles.blockTimestampText}>Deterministically Signed</Text>
-                            </View>
-
-                            <View style={[styles.statusIndicator, isVerified ? styles.statusIncGreen : styles.statusIncRed]}>
-                              <Text style={isVerified ? styles.statusTextGreen : styles.statusTextRed}>
-                                {log.status}
-                              </Text>
-                            </View>
-                          </View>
-
-                          <View style={styles.logMetaDetails}>
-                            <View style={styles.detailRow}>
-                              <Text style={styles.detailTitle}>Personnel ID:</Text>
-                              <Text style={styles.detailVal}>{log.userId}</Text>
-                            </View>
-                            <View style={styles.detailRow}>
-                              <Text style={styles.detailTitle}>Timestamp:</Text>
-                              <Text style={styles.detailVal}>{new Date(log.timestamp).toLocaleTimeString()}</Text>
-                            </View>
-                            <View style={styles.detailRow}>
-                              <Text style={styles.detailTitle}>Coordinates:</Text>
-                              <Text style={styles.detailVal}>{log.latitude.toFixed(5)}, {log.longitude.toFixed(5)}</Text>
-                            </View>
-                            <View style={styles.detailRow}>
-                              <Text style={styles.detailTitle}>Similarity Match:</Text>
-                              <Text style={styles.detailVal}>{(log.confidence * 100).toFixed(1)}%</Text>
-                            </View>
-                          </View>
-
-                          <View style={styles.hashChainWrapper}>
-                            <View style={styles.hashRow}>
-                              <Text style={styles.hashLabel}>PREV_HASH:</Text>
-                              <Text style={styles.hashText} numberOfLines={1} ellipsizeMode="middle">{log.prevHash}</Text>
-                            </View>
-                            <View style={[styles.hashRow, { borderTopWidth: 0.5, borderTopColor: 'rgba(255, 255, 255, 0.05)' }]}>
-                              <Text style={styles.hashLabel}>BLOCK_HASH:</Text>
-                              <Text style={[styles.hashText, { color: '#60a5fa' }]} numberOfLines={1} ellipsizeMode="middle">{log.hash}</Text>
-                            </View>
-                          </View>
-                        </View>
-                      </View>
-                    );
-                  })}
-                </View>
-              )}
-            </View>
-          </View>
-        )}
-
-        {activeTab === 'security' && (
-          <View style={styles.tabContent}>
-            {/* Encryption & Cryptography explanation card */}
-            <View style={styles.securityHighlightCard}>
-              <View style={styles.shieldBigWrapper}>
-                <ShieldIcon color="#ff9f1c" />
-              </View>
-              <Text style={styles.securityTitle}>SHA-256 Ledger Security</Text>
-              <Text style={styles.securityDesc}>
-                This system runs a local tamper-proof ledger. Every toll transaction is signed with a SHA-256 hash using the previous transaction's signature. Changing any single transaction breaks the chain immediately.
-              </Text>
-            </View>
-
-            {/* Cryptographic operations */}
-            <View style={styles.controlBox}>
-              <Text style={styles.controlBoxHeader}>LEDGER SYSTEM TESTS</Text>
-              
-              <ScalePress 
-                style={[styles.securityActionRow, styles.rowGreen]} 
-                onPress={handleVerifyChain}
-              >
-                <View style={styles.rowIconArea}>
-                  <ShieldIcon color="#10b981" />
-                </View>
-                <View style={styles.rowTextArea}>
-                  <Text style={styles.rowActionTitle}>Integrity Self-Test</Text>
-                  <Text style={styles.rowActionDesc}>Re-run complete SHA-256 validation checks on all historical log blocks.</Text>
-                </View>
-              </ScalePress>
-
-              <ScalePress 
-                style={[styles.securityActionRow, styles.rowRed]} 
-                onPress={handleCorruptLedger}
-              >
-                <View style={styles.rowIconArea}>
-                  <Svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                    <Path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" stroke="#f43f5e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  {/* Laser Scanning Line */}
+                  <Animated.View style={[styles.laserScanLine, animatedScanLineStyle]} />
+                </Animated.View>
+                
+                {/* Radial HUD rings overlay */}
+                <View style={styles.hudOverlay} pointerEvents="none">
+                  <Svg height="100%" width="100%" viewBox="0 0 100 100">
+                    <Circle cx="50" cy="50" r="48" stroke="rgba(255, 255, 255, 0.05)" strokeWidth="0.5" fill="none" />
+                    <Circle cx="50" cy="50" r="44" stroke="rgba(255, 255, 255, 0.03)" strokeWidth="0.8" strokeDasharray="3 3" fill="none" />
+                    <Circle cx="50" cy="50" r="28" stroke="rgba(255, 255, 255, 0.02)" strokeWidth="0.5" strokeDasharray="2 18" fill="none" />
+                    <Line x1="50" y1="2" x2="50" y2="6" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="0.8" />
+                    <Line x1="50" y1="94" x2="50" y2="98" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="0.8" />
+                    <Line x1="2" y1="50" x2="6" y2="50" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="0.8" />
+                    <Line x1="94" y1="50" x2="98" y2="50" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="0.8" />
                   </Svg>
                 </View>
-                <View style={styles.rowTextArea}>
-                  <Text style={styles.rowActionTitle}>Inject DB Corruption</Text>
-                  <Text style={styles.rowActionDesc}>Sideload invalid User data inside local database history to simulate tampering.</Text>
+
+                {/* Telemetry captions nested safely inside scanner ring width boundary */}
+                <View style={styles.hudTextContainerLeft} pointerEvents="none">
+                  <Text style={styles.hudScopeText}>[ PREPROC: CLAHE ]</Text>
                 </View>
-              </ScalePress>
-            </View>
-
-            {/* Cloud connectivity operations */}
-            <View style={styles.controlBox}>
-              <Text style={styles.controlBoxHeader}>AWS NETWORK SYNCHRONIZATION</Text>
-
-              <View style={styles.syncStateDisplay}>
-                <Text style={styles.syncStateHeading}>Queue Status</Text>
-                <Text style={styles.syncStateSub}>{syncStatusMsg}</Text>
+                <View style={styles.hudTextContainerRight} pointerEvents="none">
+                  <Text style={styles.hudScopeText}>[ COMPUTE: INT8 ]</Text>
+                </View>
               </View>
 
-              <ScalePress 
-                style={styles.primarySyncButton} 
-                onPress={handleTriggerSync}
-              >
-                <Text style={styles.primarySyncText}>Sync Queue & Purge Cache</Text>
-              </ScalePress>
+              {/* Live Feature Extraction Stats Indicators */}
+              <View style={styles.liveTelemetryCard}>
+                <View style={styles.telemetryItem}>
+                  <Text style={styles.telemetryVal}>{liveStats.ear.toFixed(3)}</Text>
+                  <Text style={styles.telemetryLbl}>EAR</Text>
+                </View>
+                <View style={styles.telemetryDivider} />
+                <View style={styles.telemetryItem}>
+                  <Text style={styles.telemetryVal}>{liveStats.mar.toFixed(3)}</Text>
+                  <Text style={styles.telemetryLbl}>MAR</Text>
+                </View>
+                <View style={styles.telemetryDivider} />
+                <View style={styles.telemetryItem}>
+                  <Text style={styles.telemetryVal}>{liveStats.yaw >= 0 ? `+${liveStats.yaw}°` : `${liveStats.yaw}°`}</Text>
+                  <Text style={styles.telemetryLbl}>Yaw</Text>
+                </View>
+                <View style={styles.telemetryDivider} />
+                <View style={styles.telemetryItem}>
+                  <Text style={styles.telemetryVal}>{liveStats.fps} Hz</Text>
+                  <Text style={styles.telemetryLbl}>Rate</Text>
+                </View>
+              </View>
+
+              {/* Message HUD Panel */}
+              <View style={styles.glassMessageCard}>
+                <Animated.Text style={[styles.hudText, animatedMessageStyle]}>
+                  {challengeState.message}
+                </Animated.Text>
+                
+                {/* Smooth Progress Indicators */}
+                <View style={styles.progressContainer}>
+                  <View style={styles.progressBarBg}>
+                    <Animated.View style={[styles.progressBarFill, animatedProgressStyle]} />
+                  </View>
+                  <View style={styles.progressMetrics}>
+                    <Text style={styles.progressText}>
+                      CHALLENGE: {challengeState.currentChallenge}
+                    </Text>
+                    <Text style={styles.progressPct}>
+                      {Math.round(challengeState.progress * 100)}%
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* Simulated Frame Action Buttons */}
+              <View style={styles.actionPanel}>
+                <Text style={styles.panelTitle}>DIAGNOSTIC TEST CONTROLS</Text>
+                <Text style={styles.panelSubtitle}>Simulate real-time camera frames and user actions</Text>
+                
+                <View style={styles.gridRow}>
+                  <ScalePress 
+                    style={[
+                      styles.actionCard, 
+                      challengesList[activeChallengeIdx] !== 'BLINK' && styles.actionCardDisabled
+                    ]} 
+                    onPress={() => handleSimulateFrameUpdate('BLINK_OK')}
+                    disabled={challengesList[activeChallengeIdx] !== 'BLINK'}
+                  >
+                    <View style={[styles.cardDot, challengesList[activeChallengeIdx] === 'BLINK' && styles.cardDotActive]} />
+                    <Text style={styles.actionCardTitle}>Blink Eyes</Text>
+                    <Text style={styles.actionCardDesc}>Simulate low Eye Aspect Ratio (EAR)</Text>
+                  </ScalePress>
+
+                  <ScalePress 
+                    style={[
+                      styles.actionCard, 
+                      challengesList[activeChallengeIdx] !== 'SMILE' && styles.actionCardDisabled
+                    ]} 
+                    onPress={() => handleSimulateFrameUpdate('SMILE_OK')}
+                    disabled={challengesList[activeChallengeIdx] !== 'SMILE'}
+                  >
+                    <View style={[styles.cardDot, challengesList[activeChallengeIdx] === 'SMILE' && styles.cardDotActive]} />
+                    <Text style={styles.actionCardTitle}>Smile Gesture</Text>
+                    <Text style={styles.actionCardDesc}>Simulate Mouth Aspect Ratio (MAR) shift</Text>
+                  </ScalePress>
+                </View>
+
+                <View style={styles.gridRow}>
+                  <ScalePress 
+                    style={[
+                      styles.actionCard, 
+                      challengesList[activeChallengeIdx] !== 'TURN_LEFT' && styles.actionCardDisabled
+                    ]} 
+                    onPress={() => handleSimulateFrameUpdate('TURN_OK')}
+                    disabled={challengesList[activeChallengeIdx] !== 'TURN_LEFT'}
+                  >
+                    <View style={[styles.cardDot, challengesList[activeChallengeIdx] === 'TURN_LEFT' && styles.cardDotActive]} />
+                    <Text style={styles.actionCardTitle}>Turn Left</Text>
+                    <Text style={styles.actionCardDesc}>Simulate Yaw rotation angle estimation</Text>
+                  </ScalePress>
+
+                  <ScalePress 
+                    style={[styles.actionCard, styles.resetCard]} 
+                    onPress={handleResetVerification}
+                  >
+                    <Text style={[styles.actionCardTitle, { color: '#ff9f1c' }]}>Reset Scan</Text>
+                    <Text style={styles.actionCardDesc}>Purge tracking baselines and regenerate list</Text>
+                  </ScalePress>
+                </View>
+              </View>
             </View>
-          </View>
-        )}
+          )}
+
+          {activeTab === 'logs' && (
+            <View style={styles.tabContent}>
+              <View style={styles.logsMetaRow}>
+                <View style={styles.metaBox}>
+                  <Text style={styles.metaVal}>{logsList.length}</Text>
+                  <Text style={styles.metaLbl}>Total Logs</Text>
+                </View>
+                <View style={styles.metaBox}>
+                  <Text style={styles.metaVal}>
+                    {logsList.filter(l => l.status === 'VERIFIED').length}
+                  </Text>
+                  <Text style={styles.metaLbl}>Verified</Text>
+                </View>
+                <View style={styles.metaBox}>
+                  <Text style={[styles.metaVal, { color: '#f43f5e' }]}>
+                    {logsList.filter(l => l.status === 'FAILED').length}
+                  </Text>
+                  <Text style={styles.metaLbl}>Rejections</Text>
+                </View>
+              </View>
+
+              {/* List of ledger transaction blocks */}
+              <View style={styles.logListContainer}>
+                <Text style={styles.sectionHeaderTitle}>SECURE HASH-CHAIN RECORDS</Text>
+                {logsList.length === 0 ? (
+                  <View style={styles.emptyContainer}>
+                    <Text style={styles.emptyText}>No ledger logs recorded in local memory yet.</Text>
+                    <Text style={styles.emptySubtext}>Perform scanner loops to record new tamper-proof logs.</Text>
+                  </View>
+                ) : (
+                  <View style={styles.timelineWrapper}>
+                    <View style={styles.verticalTimelineBar} />
+                    
+                    {logsList.map((log, index) => {
+                      const isVerified = log.status === 'VERIFIED';
+                      return (
+                        <View key={log.id} style={styles.timelineItemRow}>
+                          
+                          <View style={styles.timelineIndicatorNode}>
+                            <View style={[
+                              styles.timelineNodePoint, 
+                              isVerified ? styles.nodePointGreen : styles.nodePointRed
+                            ]} />
+                          </View>
+
+                          <View style={styles.secureLogCard}>
+                            <View style={styles.secureLogHeader}>
+                              <View style={styles.blockBadge}>
+                                <Text style={styles.blockBadgeText}>BLOCK #{logsList.length - index}</Text>
+                              </View>
+                              
+                              <View style={styles.ledgerTimestampRow}>
+                                <LockIcon color="rgba(255, 255, 255, 0.3)" />
+                                <Text style={styles.blockTimestampText}>Signed Block</Text>
+                              </View>
+
+                              <View style={[styles.statusIndicator, isVerified ? styles.statusIncGreen : styles.statusIncRed]}>
+                                <Text style={isVerified ? styles.statusTextGreen : styles.statusTextRed}>
+                                  {log.status}
+                                </Text>
+                              </View>
+                            </View>
+
+                            <View style={styles.logMetaDetails}>
+                              <View style={styles.detailRow}>
+                                <Text style={styles.detailTitle}>Personnel ID:</Text>
+                                <Text style={styles.detailVal}>{log.userId}</Text>
+                              </View>
+                              <View style={styles.detailRow}>
+                                <Text style={styles.detailTitle}>Timestamp:</Text>
+                                <Text style={styles.detailVal}>{new Date(log.timestamp).toLocaleTimeString()}</Text>
+                              </View>
+                              <View style={styles.detailRow}>
+                                <Text style={styles.detailTitle}>Coordinates:</Text>
+                                <Text style={styles.detailVal}>{log.latitude.toFixed(5)}, {log.longitude.toFixed(5)}</Text>
+                              </View>
+                              <View style={styles.detailRow}>
+                                <Text style={styles.detailTitle}>Similarity Match:</Text>
+                                <Text style={styles.detailVal}>{(log.confidence * 100).toFixed(1)}%</Text>
+                              </View>
+                            </View>
+
+                            <View style={styles.hashChainWrapper}>
+                              <View style={styles.hashRow}>
+                                <Text style={styles.hashLabel}>PREV_HASH:</Text>
+                                <Text style={styles.hashText} numberOfLines={1} ellipsizeMode="middle">{log.prevHash}</Text>
+                              </View>
+                              <View style={[styles.hashRow, { borderTopWidth: 0.5, borderTopColor: 'rgba(255, 255, 255, 0.05)' }]}>
+                                <Text style={styles.hashLabel}>BLOCK_HASH:</Text>
+                                <Text style={[styles.hashText, { color: '#60a5fa' }]} numberOfLines={1} ellipsizeMode="middle">{log.hash}</Text>
+                              </View>
+                            </View>
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </View>
+                )}
+              </View>
+            </View>
+          )}
+
+          {activeTab === 'security' && (
+            <View style={styles.tabContent}>
+              {/* Encryption & Cryptography explanation card */}
+              <View style={styles.securityHighlightCard}>
+                <View style={styles.shieldBigWrapper}>
+                  <ShieldIcon color="#ff9f1c" />
+                </View>
+                <Text style={styles.securityTitle}>SHA-256 Ledger Security</Text>
+                <Text style={styles.securityDesc}>
+                  This system runs a local tamper-proof ledger. Every toll transaction is signed with a SHA-256 hash using the previous transaction's signature. Changing any single transaction breaks the chain immediately.
+                </Text>
+              </View>
+
+              {/* Cryptographic operations */}
+              <View style={styles.controlBox}>
+                <Text style={styles.controlBoxHeader}>LEDGER SYSTEM TESTS</Text>
+                
+                <ScalePress 
+                  style={[styles.securityActionRow, styles.rowGreen]} 
+                  onPress={handleVerifyChain}
+                >
+                  <View style={styles.rowIconArea}>
+                    <ShieldIcon color="#10b981" />
+                  </View>
+                  <View style={styles.rowTextArea}>
+                    <Text style={styles.rowActionTitle}>Integrity Self-Test</Text>
+                    <Text style={styles.rowActionDesc}>Re-run complete SHA-256 validation checks on all historical log blocks.</Text>
+                  </View>
+                </ScalePress>
+
+                <ScalePress 
+                  style={[styles.securityActionRow, styles.rowRed]} 
+                  onPress={handleCorruptLedger}
+                >
+                  <View style={styles.rowIconArea}>
+                    <Svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                      <Path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" stroke="#f43f5e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </Svg>
+                  </View>
+                  <View style={styles.rowTextArea}>
+                    <Text style={styles.rowActionTitle}>Inject DB Corruption</Text>
+                    <Text style={styles.rowActionDesc}>Sideload invalid User data inside local database history to simulate tampering.</Text>
+                  </View>
+                </ScalePress>
+              </View>
+
+              {/* Cloud connectivity operations */}
+              <View style={styles.controlBox}>
+                <Text style={styles.controlBoxHeader}>AWS NETWORK SYNCHRONIZATION</Text>
+
+                <View style={styles.syncStateDisplay}>
+                  <Text style={styles.syncStateHeading}>Queue Status</Text>
+                  <Text style={styles.syncStateSub}>{syncStatusMsg}</Text>
+                </View>
+
+                <ScalePress 
+                  style={styles.primarySyncButton} 
+                  onPress={handleTriggerSync}
+                >
+                  <Text style={styles.primarySyncText}>Sync Queue & Purge Cache</Text>
+                </ScalePress>
+              </View>
+            </View>
+          )}
+
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -887,12 +888,12 @@ export const CameraScanner: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#060913', // Deep premium slate black background
+    backgroundColor: '#060913', // Slate black
   },
   appHeader: {
-    paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'ios' ? 12 : 20,
-    paddingBottom: 16,
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 12 : 16,
+    paddingBottom: 14,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -901,70 +902,70 @@ const styles = StyleSheet.create({
     backgroundColor: '#070c19',
   },
   appTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '900',
     color: '#ffffff',
     letterSpacing: 2,
   },
   appSubtitle: {
-    fontSize: 10,
+    fontSize: 9,
     color: '#9ca3af',
     fontWeight: '500',
     letterSpacing: 0.5,
-    marginTop: 2,
+    marginTop: 1,
   },
   statusGroup: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   latencyBadge: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 5,
   },
   latencyText: {
     color: '#9ca3af',
     fontWeight: '700',
-    fontSize: 9,
+    fontSize: 8,
   },
   offlineBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 159, 28, 0.12)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
+    backgroundColor: 'rgba(255, 159, 28, 0.1)',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 5,
     borderWidth: 0.5,
-    borderColor: 'rgba(255, 159, 28, 0.22)',
+    borderColor: 'rgba(255, 159, 28, 0.2)',
   },
   statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
     backgroundColor: '#ff9f1c',
-    marginRight: 5,
+    marginRight: 4,
   },
   offlineText: {
     color: '#ff9f1c',
     fontWeight: '800',
-    fontSize: 9,
+    fontSize: 8,
   },
   tabBar: {
     flexDirection: 'row',
     backgroundColor: '#070c19',
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.04)',
   },
   tabItem: {
     flex: 1,
-    flexDirection: 'row',
+    flexDirection: 'column', // Stack vertically to protect thin screens
     justifyContent: 'center',
     alignItems: 'center',
-    paddingVertical: 14,
-    gap: 6,
+    paddingVertical: 10,
+    gap: 3,
     borderBottomWidth: 2,
     borderBottomColor: 'transparent',
   },
@@ -972,7 +973,7 @@ const styles = StyleSheet.create({
     borderBottomColor: '#ff9f1c',
   },
   tabText: {
-    fontSize: 12,
+    fontSize: 10,
     color: '#9ca3af',
     fontWeight: '600',
   },
@@ -983,8 +984,13 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
   },
+  layoutWrapper: {
+    width: '100%',
+    maxWidth: 520, // Constrain layout width for tablets and large screens
+    alignSelf: 'center',
+  },
   tabContent: {
-    padding: 20,
+    padding: 16,
     alignItems: 'center',
     width: '100%',
   },
@@ -994,9 +1000,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     width: '100%',
-    paddingHorizontal: 10,
-    marginBottom: 26,
-    marginTop: 6,
+    paddingHorizontal: 6,
+    marginBottom: 20,
+    marginTop: 4,
   },
   trackerStepWrapper: {
     flexDirection: 'row',
@@ -1005,9 +1011,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   trackerCircle: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     backgroundColor: 'rgba(255, 255, 255, 0.04)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.08)',
@@ -1017,19 +1023,19 @@ const styles = StyleSheet.create({
   },
   trackerCircleActive: {
     borderColor: '#ff9f1c',
-    backgroundColor: 'rgba(255, 159, 28, 0.15)',
+    backgroundColor: 'rgba(255, 159, 28, 0.12)',
     shadowColor: '#ff9f1c',
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+    elevation: 2,
   },
   trackerCircleDone: {
     borderColor: '#10b981',
     backgroundColor: '#10b981',
   },
   trackerIndexText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
     color: '#9ca3af',
   },
@@ -1037,10 +1043,10 @@ const styles = StyleSheet.create({
     color: '#ff9f1c',
   },
   trackerLabel: {
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: '700',
     color: '#6b7280',
-    marginLeft: 6,
+    marginLeft: 4,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     zIndex: 2,
@@ -1053,9 +1059,9 @@ const styles = StyleSheet.create({
   },
   trackerLine: {
     position: 'absolute',
-    left: 20,
-    right: 12,
-    top: 12,
+    left: 18,
+    right: 10,
+    top: 10,
     height: 1,
     backgroundColor: 'rgba(255, 255, 255, 0.04)',
     zIndex: 1,
@@ -1071,35 +1077,35 @@ const styles = StyleSheet.create({
     position: 'relative',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 16,
   },
   ambientGlow: {
     position: 'absolute',
-    width: SCAN_RING_SIZE - 20,
-    height: SCAN_RING_SIZE - 20,
-    borderRadius: (SCAN_RING_SIZE - 20) / 2,
-    backgroundColor: 'rgba(255, 159, 28, 0.03)',
+    width: SCAN_RING_SIZE - 16,
+    height: SCAN_RING_SIZE - 16,
+    borderRadius: (SCAN_RING_SIZE - 16) / 2,
+    backgroundColor: 'rgba(255, 159, 28, 0.02)',
     zIndex: 0,
   },
   glowEmerald: {
-    backgroundColor: 'rgba(16, 185, 129, 0.04)',
+    backgroundColor: 'rgba(16, 185, 129, 0.03)',
   },
   glowRose: {
-    backgroundColor: 'rgba(244, 63, 94, 0.04)',
+    backgroundColor: 'rgba(244, 63, 94, 0.03)',
   },
   scanRing: {
     width: SCAN_RING_SIZE,
     height: SCAN_RING_SIZE,
     borderRadius: SCAN_RING_SIZE / 2,
-    borderWidth: 3,
+    borderWidth: 2.5,
     overflow: 'hidden',
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#020409',
-    elevation: 12,
+    elevation: 10,
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.25,
-    shadowRadius: 16,
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
   },
   camera: {
     width: '100%',
@@ -1114,18 +1120,18 @@ const styles = StyleSheet.create({
   },
   placeholderText: {
     color: '#6b7280',
-    fontSize: 12,
-    marginTop: 8,
+    fontSize: 11,
+    marginTop: 6,
     fontWeight: '500',
   },
   laserScanLine: {
     position: 'absolute',
     left: 0,
     right: 0,
-    height: 2,
+    height: 1.5,
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 8,
+    shadowOpacity: 0.7,
+    shadowRadius: 6,
   },
   hudOverlay: {
     position: 'absolute',
@@ -1136,52 +1142,53 @@ const styles = StyleSheet.create({
   },
   bracket: {
     position: 'absolute',
-    width: 22,
-    height: 22,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
+    width: 18,
+    height: 18,
+    borderColor: 'rgba(255, 255, 255, 0.18)',
     zIndex: 10,
   },
   topLeftBracket: {
-    top: -4,
-    left: -4,
-    borderTopWidth: 2,
-    borderLeftWidth: 2,
+    top: -3,
+    left: -3,
+    borderTopWidth: 1.5,
+    borderLeftWidth: 1.5,
   },
   topRightBracket: {
-    top: -4,
-    right: -4,
-    borderTopWidth: 2,
-    borderRightWidth: 2,
+    top: -3,
+    right: -3,
+    borderTopWidth: 1.5,
+    borderRightWidth: 1.5,
   },
   bottomLeftBracket: {
-    bottom: -4,
-    left: -4,
-    borderBottomWidth: 2,
-    borderLeftWidth: 2,
+    bottom: -3,
+    left: -3,
+    borderBottomWidth: 1.5,
+    borderLeftWidth: 1.5,
   },
   bottomRightBracket: {
-    bottom: -4,
-    right: -4,
-    borderBottomWidth: 2,
-    borderRightWidth: 2,
+    bottom: -3,
+    right: -3,
+    borderBottomWidth: 1.5,
+    borderRightWidth: 1.5,
   },
   hudTextContainerLeft: {
     position: 'absolute',
-    bottom: 8,
-    left: -32,
+    bottom: 12,
+    left: 14, // Pinned safely inside ring boundaries
     zIndex: 11,
   },
   hudTextContainerRight: {
     position: 'absolute',
-    bottom: 8,
-    right: -32,
+    bottom: 12,
+    right: 14, // Pinned safely inside ring boundaries
     zIndex: 11,
   },
   hudScopeText: {
-    color: 'rgba(255, 255, 255, 0.15)',
-    fontSize: 7,
+    color: 'rgba(255, 255, 255, 0.2)',
+    fontSize: 6,
     fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
-    fontWeight: '600',
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
 
   // Live Feature Extraction Stats Indicator
@@ -1192,26 +1199,26 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.015)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.03)',
-    borderRadius: 14,
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    marginBottom: 20,
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    marginBottom: 16,
   },
   telemetryItem: {
     flex: 1,
     alignItems: 'center',
   },
   telemetryVal: {
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: '900',
     color: '#ffffff',
     fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
   },
   telemetryLbl: {
-    fontSize: 8,
+    fontSize: 7,
     color: '#6b7280',
     fontWeight: '700',
-    marginTop: 2,
+    marginTop: 1,
     textTransform: 'uppercase',
   },
   telemetryDivider: {
@@ -1223,41 +1230,35 @@ const styles = StyleSheet.create({
   // Glassmorphic prompt card
   glassMessageCard: {
     width: '100%',
-    backgroundColor: 'rgba(12, 18, 38, 0.85)',
-    borderRadius: 18,
-    padding: 18,
+    backgroundColor: 'rgba(12, 18, 38, 0.8)',
+    borderRadius: 16,
+    padding: 14,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.04)',
     alignItems: 'center',
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    elevation: 5,
+    marginBottom: 16,
   },
   hudText: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '800',
     textAlign: 'center',
-    marginBottom: 16,
-    lineHeight: 22,
-    letterSpacing: 0.3,
+    marginBottom: 12,
+    lineHeight: 18,
   },
   progressContainer: {
     width: '100%',
   },
   progressBarBg: {
     width: '100%',
-    height: 4,
+    height: 3,
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 2,
+    borderRadius: 1.5,
     overflow: 'hidden',
-    marginBottom: 10,
+    marginBottom: 8,
   },
   progressBarFill: {
     height: '100%',
-    borderRadius: 2,
+    borderRadius: 1.5,
   },
   progressMetrics: {
     flexDirection: 'row',
@@ -1265,13 +1266,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   progressText: {
-    fontSize: 9,
+    fontSize: 8,
     color: '#9ca3af',
     fontWeight: '800',
     letterSpacing: 0.5,
   },
   progressPct: {
-    fontSize: 10,
+    fontSize: 9,
     color: '#ffffff',
     fontWeight: '900',
   },
@@ -1282,32 +1283,32 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.015)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.03)',
-    borderRadius: 20,
-    padding: 16,
+    borderRadius: 16,
+    padding: 14,
   },
   panelTitle: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '900',
     color: '#9ca3af',
     letterSpacing: 1.5,
-    marginBottom: 4,
+    marginBottom: 2,
   },
   panelSubtitle: {
-    fontSize: 9,
+    fontSize: 8,
     color: '#6b7280',
-    marginBottom: 16,
+    marginBottom: 12,
     fontWeight: '500',
   },
   gridRow: {
     flexDirection: 'row',
-    gap: 12,
-    marginBottom: 12,
+    gap: 8,
+    marginBottom: 8,
   },
   actionCard: {
     flex: 1,
     backgroundColor: 'rgba(255, 255, 255, 0.025)',
-    borderRadius: 12,
-    padding: 14,
+    borderRadius: 10,
+    padding: 10,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.04)',
   },
@@ -1319,55 +1320,55 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 159, 28, 0.02)',
   },
   cardDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
     backgroundColor: 'rgba(255, 255, 255, 0.08)',
     position: 'absolute',
-    top: 14,
-    right: 14,
+    top: 10,
+    right: 10,
   },
   cardDotActive: {
     backgroundColor: '#ff9f1c',
   },
   actionCardTitle: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '800',
     color: '#ffffff',
-    marginBottom: 4,
+    marginBottom: 2,
   },
   actionCardDesc: {
-    fontSize: 9,
+    fontSize: 8,
     color: '#6b7280',
-    lineHeight: 12,
+    lineHeight: 11,
   },
 
   // Logs view layout
   logsMetaRow: {
     flexDirection: 'row',
     width: '100%',
-    gap: 12,
-    marginBottom: 20,
+    gap: 10,
+    marginBottom: 16,
   },
   metaBox: {
     flex: 1,
     backgroundColor: 'rgba(255, 255, 255, 0.015)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.03)',
-    borderRadius: 14,
-    paddingVertical: 14,
+    borderRadius: 12,
+    paddingVertical: 12,
     alignItems: 'center',
   },
   metaVal: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '900',
     color: '#10b981',
   },
   metaLbl: {
-    fontSize: 9,
+    fontSize: 8,
     color: '#9ca3af',
     fontWeight: '700',
-    marginTop: 4,
+    marginTop: 2,
     textTransform: 'uppercase',
   },
   logListContainer: {
@@ -1376,122 +1377,83 @@ const styles = StyleSheet.create({
   timelineWrapper: {
     position: 'relative',
     width: '100%',
-    paddingLeft: 12,
+    paddingLeft: 4,
   },
   verticalTimelineBar: {
     position: 'absolute',
     top: 12,
     bottom: 24,
-    left: 20,
+    left: 12,
     width: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderStyle: 'dashed',
   },
   timelineItemRow: {
     flexDirection: 'row',
     width: '100%',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   timelineIndicatorNode: {
-    width: 20,
+    width: 16,
     alignItems: 'center',
-    marginRight: 10,
+    marginRight: 6,
     marginTop: 18,
   },
   timelineNodePoint: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
     backgroundColor: '#ff9f1c',
     zIndex: 3,
   },
   nodePointGreen: {
     backgroundColor: '#10b981',
-    shadowColor: '#10b981',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.6,
-    shadowRadius: 4,
   },
   nodePointRed: {
     backgroundColor: '#f43f5e',
-    shadowColor: '#f43f5e',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.6,
-    shadowRadius: 4,
-  },
-  linkChainLine: {
-    // Spacer element
-  },
-  sectionHeaderTitle: {
-    fontSize: 11,
-    fontWeight: '900',
-    color: '#9ca3af',
-    letterSpacing: 1.5,
-    marginBottom: 12,
-  },
-  emptyContainer: {
-    backgroundColor: 'rgba(255, 255, 255, 0.01)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.03)',
-    paddingVertical: 40,
-    paddingHorizontal: 20,
-    alignItems: 'center',
-  },
-  emptyText: {
-    color: '#9ca3af',
-    fontSize: 12,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  emptySubtext: {
-    color: '#6b7280',
-    fontSize: 10,
-    marginTop: 6,
-    textAlign: 'center',
   },
   secureLogCard: {
     flex: 1,
     backgroundColor: '#0a0e1b',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.03)',
-    borderRadius: 14,
-    padding: 14,
+    borderRadius: 12,
+    padding: 12,
   },
   secureLogHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 10,
     borderBottomWidth: 0.5,
     borderBottomColor: 'rgba(255, 255, 255, 0.04)',
-    paddingBottom: 8,
+    paddingBottom: 6,
   },
   blockBadge: {
     backgroundColor: 'rgba(96, 165, 250, 0.08)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 5,
   },
   blockBadgeText: {
     color: '#60a5fa',
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: '900',
   },
   ledgerTimestampRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
   },
   blockTimestampText: {
-    fontSize: 8,
-    color: 'rgba(255, 255, 255, 0.35)',
+    fontSize: 7,
+    color: 'rgba(255, 255, 255, 0.3)',
     fontWeight: '600',
   },
   statusIndicator: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 5,
   },
   statusIncGreen: {
     backgroundColor: 'rgba(16, 185, 129, 0.08)',
@@ -1501,17 +1463,17 @@ const styles = StyleSheet.create({
   },
   statusTextGreen: {
     color: '#10b981',
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: '900',
   },
   statusTextRed: {
     color: '#f43f5e',
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: '900',
   },
   logMetaDetails: {
-    gap: 6,
-    marginBottom: 12,
+    gap: 5,
+    marginBottom: 10,
   },
   detailRow: {
     flexDirection: 'row',
@@ -1519,34 +1481,34 @@ const styles = StyleSheet.create({
   },
   detailTitle: {
     color: '#9ca3af',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '600',
   },
   detailVal: {
     color: '#ffffff',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
   },
   hashChainWrapper: {
     backgroundColor: 'rgba(0, 0, 0, 0.15)',
-    borderRadius: 8,
-    padding: 8,
-    gap: 4,
+    borderRadius: 6,
+    padding: 6,
+    gap: 3,
   },
   hashRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 2,
+    paddingVertical: 1,
   },
   hashLabel: {
-    fontSize: 8,
+    fontSize: 7,
     fontWeight: '800',
     color: '#6b7280',
-    width: 65,
+    width: 60,
   },
   hashText: {
     flex: 1,
-    fontSize: 8,
+    fontSize: 7,
     color: '#9ca3af',
     fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
   },
@@ -1554,121 +1516,121 @@ const styles = StyleSheet.create({
   // Security view layout
   securityHighlightCard: {
     width: '100%',
-    backgroundColor: 'rgba(255, 159, 28, 0.02)',
-    borderColor: 'rgba(255, 159, 28, 0.06)',
+    backgroundColor: 'rgba(255, 159, 28, 0.015)',
+    borderColor: 'rgba(255, 159, 28, 0.05)',
     borderWidth: 1,
-    borderRadius: 20,
-    padding: 20,
+    borderRadius: 16,
+    padding: 16,
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 16,
   },
   shieldBigWrapper: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: 'rgba(255, 159, 28, 0.08)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 14,
+    marginBottom: 10,
   },
   securityTitle: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '900',
     color: '#ffffff',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   securityDesc: {
-    fontSize: 11,
+    fontSize: 10,
     color: '#9ca3af',
     textAlign: 'center',
-    lineHeight: 18,
+    lineHeight: 15,
     fontWeight: '500',
   },
   controlBox: {
     width: '100%',
     backgroundColor: 'rgba(255, 255, 255, 0.015)',
-    borderRadius: 20,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.03)',
-    padding: 16,
-    marginBottom: 20,
+    padding: 14,
+    marginBottom: 16,
   },
   controlBoxHeader: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '900',
     color: '#9ca3af',
     letterSpacing: 1.5,
-    marginBottom: 14,
+    marginBottom: 10,
   },
   securityActionRow: {
     flexDirection: 'row',
     backgroundColor: 'rgba(255, 255, 255, 0.015)',
-    borderRadius: 14,
-    padding: 14,
+    borderRadius: 12,
+    padding: 12,
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.03)',
   },
   rowGreen: {
-    borderColor: 'rgba(16, 185, 129, 0.12)',
+    borderColor: 'rgba(16, 185, 129, 0.1)',
     backgroundColor: 'rgba(16, 185, 129, 0.02)',
   },
   rowRed: {
-    borderColor: 'rgba(244, 63, 94, 0.12)',
+    borderColor: 'rgba(244, 63, 94, 0.1)',
     backgroundColor: 'rgba(244, 63, 94, 0.02)',
   },
   rowIconArea: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     backgroundColor: 'rgba(255, 255, 255, 0.02)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    marginRight: 10,
   },
   rowTextArea: {
     flex: 1,
   },
   rowActionTitle: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '800',
     color: '#ffffff',
     marginBottom: 2,
   },
   rowActionDesc: {
-    fontSize: 10,
+    fontSize: 9,
     color: '#6b7280',
-    lineHeight: 14,
+    lineHeight: 12,
   },
   syncStateDisplay: {
     backgroundColor: 'rgba(0, 0, 0, 0.2)',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 14,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 12,
   },
   syncStateHeading: {
-    fontSize: 10,
+    fontSize: 9,
     color: '#9ca3af',
     fontWeight: '800',
     textTransform: 'uppercase',
-    marginBottom: 4,
+    marginBottom: 2,
   },
   syncStateSub: {
-    fontSize: 11,
+    fontSize: 10,
     color: '#ff9f1c',
     fontWeight: '700',
   },
   primarySyncButton: {
     backgroundColor: '#ff9f1c',
-    borderRadius: 12,
-    paddingVertical: 14,
+    borderRadius: 10,
+    paddingVertical: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
   primarySyncText: {
     color: '#000000',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '900',
     letterSpacing: 0.5,
   },
