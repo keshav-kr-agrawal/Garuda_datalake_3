@@ -1,10 +1,25 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AngleEmbedding, FaceEmbedderService } from './faceEmbedder';
 
 export interface EnrolledUser {
   id: string;
   name: string;
   role: string;
-  embedding: number[]; // 128-D vector saved as standard array
+  /** Legacy flat 128-D vector — kept for backward compatibility */
+  embedding: number[];
+  /**
+   * NEW: Rich multi-angle face model built by the enrollment wizard.
+   * When present, fast detection uses this instead of the flat embedding.
+   */
+  faceModel?: {
+    /** Weighted composite embedding (center 2× weight) — used for fast lookup */
+    masterEmbedding: number[];
+    /** Per-angle raw vectors captured during enrollment wizard */
+    angleEmbeddings: AngleEmbedding[];
+    enrolledAt: number;
+    /** Incremented each time the user re-enrolls */
+    version: number;
+  };
 }
 
 export interface AuditLog {
@@ -97,6 +112,48 @@ export class LocalDatabaseService {
     return {
       user: bestUser,
       similarity: maxSimilarity,
+    };
+  }
+
+  /**
+   * NEW: Multi-angle vector search that checks both masterEmbedding and
+   * per-angle sub-embeddings for users who have a rich faceModel.
+   * Falls back to the flat embedding for legacy users.
+   *
+   * Uses FaceEmbedderService.detectFace() for best-angle matching.
+   */
+  public async vectorSearchMultiAngle(
+    queryEmbedding: Float32Array
+  ): Promise<{ user: EnrolledUser | null; similarity: number; matchedAngle: string }> {
+    const users = await this.getEnrolledUsers();
+    const embedder = FaceEmbedderService.getInstance();
+
+    // Build the model list for detectFace()
+    const models = users.map(u => {
+      if (u.faceModel) {
+        return {
+          userId: u.id,
+          masterEmbedding: new Float32Array(u.faceModel.masterEmbedding),
+          angleEmbeddings: u.faceModel.angleEmbeddings.map(a => ({
+            step: a.step,
+            embedding: new Float32Array(a.embedding),
+          })),
+        };
+      }
+      // Fallback: use flat embedding as master
+      return {
+        userId: u.id,
+        masterEmbedding: new Float32Array(u.embedding),
+      };
+    });
+
+    const detection = embedder.detectFace(queryEmbedding, models);
+    const matchedUser = users.find(u => u.id === detection.userId) ?? null;
+
+    return {
+      user: matchedUser,
+      similarity: detection.confidence,
+      matchedAngle: detection.matchedAngle,
     };
   }
 

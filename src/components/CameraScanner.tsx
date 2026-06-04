@@ -117,15 +117,22 @@ export const CameraScanner: React.FC = () => {
 
   // UI & Scan States
   const [activeUser, setActiveUser] = useState<EnrolledUser | null>(null);
-  const [challengeState, setChallengeState] = useState<ChallengeState>({
-    currentChallenge: 'BLINK',
-    progress: 0,
-    isCalibrated: false,
-    message: 'Align face within HUD bounds to start calibration',
+
+  // Generate random challenge order on every session start
+  const [challengesList, setChallengesList] = useState<LivenessChallenge[]>(
+    () => livenessService.generateChallengeSequence()
+  );
+  const [challengeState, setChallengeState] = useState<ChallengeState>(() => {
+    const initial = livenessService.generateChallengeSequence();
+    return {
+      currentChallenge: initial[0],
+      progress: 0,
+      isCalibrated: false,
+      message: 'Align face within HUD bounds to start calibration',
+    };
   });
 
   const [activeChallengeIdx, setActiveChallengeIdx] = useState(0);
-  const [challengesList, setChallengesList] = useState<LivenessChallenge[]>(['BLINK', 'SMILE', 'TURN_LEFT']);
   const [logsList, setLogsList] = useState<AuditLog[]>([]);
   const [syncStatusMsg, setSyncStatusMsg] = useState('Off-grid mode active. Sync pending.');
   
@@ -309,7 +316,7 @@ export const CameraScanner: React.FC = () => {
     });
   };
 
-  const handleSimulateFrameUpdate = (action: 'BLINK_OK' | 'SMILE_OK' | 'TURN_OK') => {
+  const handleSimulateFrameUpdate = (action: 'BLINK_OK' | 'SMILE_OK' | 'TURN_OK' | 'TURN_RIGHT_OK') => {
     const mockLandmarks = Array.from({ length: 468 }, () => ({ x: 0, y: 0, z: 0 }));
     const currentChallenge = challengesList[activeChallengeIdx];
 
@@ -326,6 +333,9 @@ export const CameraScanner: React.FC = () => {
       advanceChallenge();
     } else if (action === 'TURN_OK' && currentChallenge === 'TURN_LEFT') {
       livenessService.processFrame(mockLandmarks, 'TURN_LEFT');
+      advanceChallenge();
+    } else if (action === 'TURN_RIGHT_OK' && currentChallenge === 'TURN_RIGHT') {
+      livenessService.processFrame(mockLandmarks, 'TURN_RIGHT');
       advanceChallenge();
     }
   };
@@ -697,15 +707,30 @@ export const CameraScanner: React.FC = () => {
                   >
                     <View style={[styles.cardDot, challengesList[activeChallengeIdx] === 'TURN_LEFT' && styles.cardDotActive]} />
                     <Text style={styles.actionCardTitle}>Turn Left</Text>
-                    <Text style={styles.actionCardDesc}>Simulate Yaw rotation angle estimation</Text>
+                    <Text style={styles.actionCardDesc}>Simulate Yaw rotation (left) angle</Text>
                   </ScalePress>
 
+                  <ScalePress 
+                    style={[
+                      styles.actionCard, 
+                      challengesList[activeChallengeIdx] !== 'TURN_RIGHT' && styles.actionCardDisabled
+                    ]} 
+                    onPress={() => handleSimulateFrameUpdate('TURN_RIGHT_OK')}
+                    disabled={challengesList[activeChallengeIdx] !== 'TURN_RIGHT'}
+                  >
+                    <View style={[styles.cardDot, challengesList[activeChallengeIdx] === 'TURN_RIGHT' && styles.cardDotActive]} />
+                    <Text style={styles.actionCardTitle}>Turn Right</Text>
+                    <Text style={styles.actionCardDesc}>Simulate Yaw rotation (right) angle</Text>
+                  </ScalePress>
+                </View>
+
+                <View style={styles.gridRow}>
                   <ScalePress 
                     style={[styles.actionCard, styles.resetCard]} 
                     onPress={handleResetVerification}
                   >
                     <Text style={[styles.actionCardTitle, { color: '#ff9f1c' }]}>Reset Scan</Text>
-                    <Text style={styles.actionCardDesc}>Purge tracking baselines and regenerate list</Text>
+                    <Text style={styles.actionCardDesc}>New random challenge set regenerated</Text>
                   </ScalePress>
                 </View>
               </View>

@@ -6,6 +6,96 @@ export interface Landmark3D {
 
 export type LivenessChallenge = 'BLINK' | 'SMILE' | 'TURN_LEFT' | 'TURN_RIGHT' | 'SUCCESS' | 'FAILED';
 
+// ─── Phone-style Enrollment Steps ────────────────────────────────────────────
+// Mirrors iPhone Face ID / Android enrollment: guided multi-angle head scan.
+export type EnrollmentStep =
+  | 'LOOK_CENTER'   // Face straight ahead — baseline
+  | 'LOOK_UP'       // Pitch > +15°
+  | 'LOOK_DOWN'     // Pitch < -15°
+  | 'TURN_LEFT'     // Yaw > +20°
+  | 'TURN_RIGHT'    // Yaw < -20°
+  | 'TILT_LEFT';    // Roll > +12°
+
+export interface EnrollmentStepConfig {
+  step: EnrollmentStep;
+  label: string;
+  guidance: string;
+  arrow: 'none' | 'up' | 'down' | 'left' | 'right' | 'tilt-left';
+  /** How many consecutive stable frames required before auto-capturing */
+  requiredFrames: number;
+  /** Pose check: returns true when the user is in correct position */
+  poseCheck: (yaw: number, pitch: number, roll: number) => boolean;
+}
+
+export const ENROLLMENT_STEPS: EnrollmentStepConfig[] = [
+  {
+    step: 'LOOK_CENTER',
+    label: 'Face Forward',
+    guidance: 'Look straight ahead at the camera',
+    arrow: 'none',
+    requiredFrames: 20,
+    poseCheck: (yaw, pitch, roll) =>
+      Math.abs(yaw) < 10 && Math.abs(pitch) < 10 && Math.abs(roll) < 8,
+  },
+  {
+    step: 'LOOK_UP',
+    label: 'Look Up',
+    guidance: 'Slowly tilt your head UP',
+    arrow: 'up',
+    requiredFrames: 20,
+    poseCheck: (yaw, pitch, _roll) =>
+      pitch > 14 && Math.abs(yaw) < 15,
+  },
+  {
+    step: 'LOOK_DOWN',
+    label: 'Look Down',
+    guidance: 'Slowly tilt your head DOWN',
+    arrow: 'down',
+    requiredFrames: 20,
+    poseCheck: (yaw, pitch, _roll) =>
+      pitch < -14 && Math.abs(yaw) < 15,
+  },
+  {
+    step: 'TURN_LEFT',
+    label: 'Turn Left',
+    guidance: 'Slowly turn your head to the LEFT',
+    arrow: 'left',
+    requiredFrames: 20,
+    poseCheck: (yaw, _pitch, _roll) => yaw > 18,
+  },
+  {
+    step: 'TURN_RIGHT',
+    label: 'Turn Right',
+    guidance: 'Slowly turn your head to the RIGHT',
+    arrow: 'right',
+    requiredFrames: 20,
+    poseCheck: (yaw, _pitch, _roll) => yaw < -18,
+  },
+  {
+    step: 'TILT_LEFT',
+    label: 'Tilt Sideways',
+    guidance: 'Gently tilt your head to the left shoulder',
+    arrow: 'tilt-left',
+    requiredFrames: 18,
+    poseCheck: (_yaw, _pitch, roll) => roll > 11,
+  },
+];
+
+export interface EnrollmentFrameResult {
+  currentStep: EnrollmentStep;
+  currentStepConfig: EnrollmentStepConfig;
+  completedSteps: EnrollmentStep[];
+  /** 0–1 progress for the current step (based on stable frame count) */
+  stepProgress: number;
+  /** 0–1 progress across all steps */
+  overallProgress: number;
+  isStepComplete: boolean;
+  isEnrollmentComplete: boolean;
+  guidanceMessage: string;
+  /** Estimated pose values for display */
+  pose: { yaw: number; pitch: number; roll: number };
+}
+
 export interface ChallengeState {
   currentChallenge: LivenessChallenge;
   progress: number; // 0 to 1
@@ -30,6 +120,11 @@ export class LivenessMathService {
   private hasSmiled = false;
   private hasTurned = false;
 
+  // ─── Enrollment state ──────────────────────────────────────────────────────
+  private enrollmentStepIdx = 0;
+  private enrollmentCompletedSteps: EnrollmentStep[] = [];
+  private enrollmentStableFrameCount = 0;
+
   private constructor() {}
 
   public static getInstance(): LivenessMathService {
@@ -41,21 +136,38 @@ export class LivenessMathService {
 
   /**
    * Generates a randomized challenge sequence to prevent sophisticated replay attacks.
-   * Shuffles the standard active liveness tasks: BLINK, SMILE, TURN_LEFT.
+   *
+   * Pool of 4 possible challenges: BLINK, SMILE, TURN_LEFT, TURN_RIGHT.
+   * Each verification session randomly draws 3 from the pool using a
+   * Fisher-Yates shuffle, so the order AND the exact set of challenges
+   * is unpredictable — making photo/video replay attacks infeasible.
+   *
+   * Possible sessions (examples):
+   *   [TURN_LEFT, BLINK, SMILE]
+   *   [SMILE, TURN_RIGHT, BLINK]
+   *   [TURN_RIGHT, SMILE, TURN_LEFT]
+   *   [BLINK, TURN_LEFT, TURN_RIGHT]  ... etc.
    */
   public generateChallengeSequence(): LivenessChallenge[] {
-    const list: LivenessChallenge[] = ['BLINK', 'SMILE', 'TURN_LEFT'];
-    for (let i = list.length - 1; i > 0; i--) {
+    // Full pool — all valid liveness challenges
+    const pool: LivenessChallenge[] = ['BLINK', 'SMILE', 'TURN_LEFT', 'TURN_RIGHT'];
+
+    // Fisher-Yates shuffle the entire pool
+    for (let i = pool.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
-      const temp = list[i];
-      list[i] = list[j];
-      list[j] = temp;
+      const temp = pool[i];
+      pool[i] = pool[j];
+      pool[j] = temp;
     }
-    return list;
+
+    // Pick the first 3 from the shuffled pool
+    // → random subset of 3 from 4, in random order
+    return pool.slice(0, 3);
   }
 
+
   /**
-   * Resets calibration and challenge states
+   * Resets calibration and liveness challenge states
    */
   public reset(): void {
     this.calibrationFrames = 0;
@@ -67,6 +179,90 @@ export class LivenessMathService {
     this.blinkDetectCount = 0;
     this.hasSmiled = false;
     this.hasTurned = false;
+  }
+
+  /**
+   * Resets the enrollment wizard back to step 0.
+   * Call this when starting a fresh enrollment session.
+   */
+  public resetEnrollment(): void {
+    this.enrollmentStepIdx = 0;
+    this.enrollmentCompletedSteps = [];
+    this.enrollmentStableFrameCount = 0;
+  }
+
+  /**
+   * Process a single camera frame during enrollment.
+   * Checks current step's pose threshold and accumulates stable frames.
+   * When requiredFrames is reached, auto-advances to the next step.
+   *
+   * @param landmarks  468 3D landmark points from MediaPipe FaceMesh
+   * @returns EnrollmentFrameResult — drives the wizard UI
+   */
+  public processEnrollmentFrame(landmarks: Landmark3D[]): EnrollmentFrameResult {
+    const totalSteps = ENROLLMENT_STEPS.length;
+    const stepConfig = ENROLLMENT_STEPS[this.enrollmentStepIdx];
+    const pose = this.estimatePose(landmarks);
+
+    const inPosition = stepConfig.poseCheck(pose.yaw, pose.pitch, pose.roll);
+
+    if (inPosition) {
+      this.enrollmentStableFrameCount++;
+    } else {
+      // Reset stable count if user moves out of position
+      this.enrollmentStableFrameCount = Math.max(0, this.enrollmentStableFrameCount - 2);
+    }
+
+    const stepProgress = Math.min(
+      this.enrollmentStableFrameCount / stepConfig.requiredFrames,
+      1.0
+    );
+    const isStepComplete = this.enrollmentStableFrameCount >= stepConfig.requiredFrames;
+
+    if (isStepComplete) {
+      // Auto-advance to next step
+      this.enrollmentCompletedSteps = [
+        ...this.enrollmentCompletedSteps,
+        stepConfig.step,
+      ];
+      this.enrollmentStableFrameCount = 0;
+      this.enrollmentStepIdx = Math.min(this.enrollmentStepIdx + 1, totalSteps);
+    }
+
+    const isEnrollmentComplete = this.enrollmentStepIdx >= totalSteps;
+    const overallProgress =
+      (this.enrollmentCompletedSteps.length + stepProgress) / totalSteps;
+
+    const currentConfig = isEnrollmentComplete
+      ? ENROLLMENT_STEPS[totalSteps - 1]
+      : ENROLLMENT_STEPS[this.enrollmentStepIdx];
+
+    const guidanceMessage = isEnrollmentComplete
+      ? '✅ Scan complete! Saving your face model...'
+      : isStepComplete
+      ? `✓ ${stepConfig.label} captured!`
+      : stepConfig.guidance;
+
+    return {
+      currentStep: currentConfig.step,
+      currentStepConfig: currentConfig,
+      completedSteps: [...this.enrollmentCompletedSteps],
+      stepProgress: isEnrollmentComplete ? 1.0 : stepProgress,
+      overallProgress: Math.min(overallProgress, 1.0),
+      isStepComplete,
+      isEnrollmentComplete,
+      guidanceMessage,
+      pose,
+    };
+  }
+
+  /**
+   * Returns the step config for the current enrollment step.
+   * Useful for rendering directional arrows in the UI.
+   */
+  public getCurrentEnrollmentStepConfig(): EnrollmentStepConfig | null {
+    if (this.enrollmentStepIdx >= ENROLLMENT_STEPS.length) return null;
+    return ENROLLMENT_STEPS[this.enrollmentStepIdx];
   }
 
   /**

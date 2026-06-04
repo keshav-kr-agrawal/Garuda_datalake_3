@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { LivenessMathService, LivenessChallenge, ChallengeState } from '../services/livenessMath';
+import { LivenessMathService, LivenessChallenge, ChallengeState, ENROLLMENT_STEPS, EnrollmentFrameResult } from '../services/livenessMath';
 import { FaceEmbedderService } from '../services/faceEmbedder';
 import { CryptographicLedgerService } from '../services/cryptographicLedger';
 import { SyncManagerService } from '../services/syncManager';
 import { LocalDatabaseService, EnrolledUser, AuditLog } from '../services/databaseSchema';
+import { EnrollmentOrchestratorService, OrchestratorState } from '../services/enrollmentOrchestrator';
 
 // Standard MediaPipe Landmark Contour Indices for high-fidelity drawing
 const FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
@@ -21,6 +22,8 @@ export const DesktopWebDashboard: React.FC = () => {
   const ledgerService = CryptographicLedgerService.getInstance();
   const syncService = SyncManagerService.getInstance();
   const dbService = LocalDatabaseService.getInstance();
+  // Phone-style enrollment orchestrator
+  const enrollmentOrchestrator = EnrollmentOrchestratorService.getInstance();
 
   // Webcam & Canvas Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -50,20 +53,27 @@ export const DesktopWebDashboard: React.FC = () => {
   const [liveRoll, setLiveRoll] = useState(0);
 
   // Dynamic Challenge States
-  const [challengeState, setChallengeState] = useState<ChallengeState>({
-    currentChallenge: 'BLINK',
-    progress: 0,
-    isCalibrated: false,
-    message: 'Align face and click "Enable Real Camera"',
+  // NOTE: generate on construction so first challenge is already random
+  const [challengesList, setChallengesList] = useState<LivenessChallenge[]>(
+    () => livenessService.generateChallengeSequence()
+  );
+  const [challengeState, setChallengeState] = useState<ChallengeState>(() => {
+    const initial = livenessService.generateChallengeSequence();
+    // Sync the list too — both use the same generated sequence
+    return {
+      currentChallenge: initial[0],
+      progress: 0,
+      isCalibrated: false,
+      message: 'Align face and click "Enable Real Camera"',
+    };
   });
 
   const [activeChallengeIdx, setActiveChallengeIdx] = useState(0);
-  const [challengesList, setChallengesList] = useState<LivenessChallenge[]>(['BLINK', 'SMILE', 'TURN_LEFT']);
   const [statusColor, setStatusColor] = useState<'amber' | 'emerald' | 'crimson'>('amber');
   const [searchLatency, setSearchLatency] = useState<number | null>(null);
   const [matchedProfile, setMatchedProfile] = useState<{ user: EnrolledUser | null; confidence: number } | null>(null);
   
-  // Real Multi-View Enrollment State Workflow
+  // Real Multi-View Enrollment State — phone-style 6-step wizard
   const [enrollStep, setEnrollStep] = useState<'NONE' | 'FRONT' | 'LEFT' | 'RIGHT' | 'COMPLETE'>('NONE');
   const [newName, setNewName] = useState('');
   const [newRole, setNewRole] = useState('Toll Supervisor');
@@ -77,8 +87,16 @@ export const DesktopWebDashboard: React.FC = () => {
   const [vectorLeft, setVectorLeft] = useState<Float32Array | null>(null);
   const [vectorRight, setVectorRight] = useState<Float32Array | null>(null);
 
-  const [enrollProgressMsg, setEnrollProgressMsg] = useState('Type your name and start the 3-view wizard.');
+  // NEW: orchestrator-driven enrollment
+  const [orchestratorState, setOrchestratorState] = useState<OrchestratorState>('IDLE');
+  const [enrollFrameResult, setEnrollFrameResult] = useState<EnrollmentFrameResult | null>(null);
+  const [enrollSaving, setEnrollSaving] = useState(false);
+
+  const [enrollProgressMsg, setEnrollProgressMsg] = useState('Type your name and click "Start 6-Step Face Scan".');
   const [steadyFramesCount, setSteadyFramesCount] = useState(0);
+  // Ref so handleFaceMeshResults callback can see current orchestratorState without stale closure
+  const orchestratorStateRef = useRef<OrchestratorState>('IDLE');
+  useEffect(() => { orchestratorStateRef.current = orchestratorState; }, [orchestratorState]);
 
   // Sync / Online monitor
   const [syncStatusMsg, setSyncStatusMsg] = useState('System fully offline. Sync pending.');
@@ -90,9 +108,9 @@ export const DesktopWebDashboard: React.FC = () => {
   );
 
   // Active refs to feed inside callback closures
-  const activeChallengeRef = useRef<LivenessChallenge>('BLINK');
+  const activeChallengeRef = useRef<LivenessChallenge>(challengesList[0]);
   const activeChallengeIdxRef = useRef<number>(0);
-  const challengesListRef = useRef<LivenessChallenge[]>(['BLINK', 'SMILE', 'TURN_LEFT']);
+  const challengesListRef = useRef<LivenessChallenge[]>(challengesList);
   const activeUserRef = useRef<EnrolledUser | null>(null);
   const enrollStepRef = useRef<'NONE' | 'FRONT' | 'LEFT' | 'RIGHT' | 'COMPLETE'>('NONE');
   const steadyFramesCountRef = useRef<number>(0);
@@ -330,32 +348,66 @@ export const DesktopWebDashboard: React.FC = () => {
       }
     }
 
-    // 2. Feed actual coordinates to trigonometric anti-spoof estimators
-    const currentChallenge = activeChallengeRef.current;
-    
-    // Auto-map normalized landmarks [0, 1] into appropriate pixel values
-    // LivenessMathService accepts Landmark3D structures {x, y, z}
+    // Scale normalized landmarks [0,1] → pixel space
     const scaledLandmarks = landmarks.map((l: any) => ({
       x: l.x * 480,
       y: l.y * 480,
       z: l.z * 480
     }));
 
-    // Estimate live head yaw, pitch, roll
+    // Always update live pose telemetry
     const pose = livenessService.estimatePose(scaledLandmarks);
     setLiveYaw(pose.yaw);
     setLivePitch(pose.pitch);
     setLiveRoll(pose.roll);
 
-    const step = enrollStepRef.current;
+    // ── Branch 1: Orchestrator-driven enrollment wizard ──────────────────────
+    if (orchestratorStateRef.current === 'ENROLLING') {
+      const frameResult = enrollmentOrchestrator.processFrame(
+        scaledLandmarks,
+        generateFaceGeometrySignature
+      );
+      if (frameResult) {
+        setEnrollFrameResult({ ...frameResult });
+        setEnrollProgressMsg(frameResult.guidanceMessage);
+      }
 
-    // Check if user is in multi-view enrollment step
+      // When orchestrator auto-transitions to SAVING, finalize enrollment
+      const currentState = enrollmentOrchestrator.getStatus().state;
+      if (currentState === 'SAVING' && !enrollSaving) {
+        setOrchestratorState('SAVING');
+        orchestratorStateRef.current = 'SAVING';
+        setEnrollSaving(true);
+        const snapshotBase64 = snapVideoFrame();
+        setSnapFront(snapshotBase64);
+        const success = await enrollmentOrchestrator.buildAndSaveFaceModel(snapshotBase64);
+        setEnrollSaving(false);
+        if (success) {
+          setOrchestratorState('COMPLETE');
+          orchestratorStateRef.current = 'COMPLETE';
+          await refreshUsers();
+          setEnrollProgressMsg('✅ Face model saved! You can now use fast detection.');
+          setMiddleTab('roster');
+        } else {
+          setOrchestratorState('ERROR');
+          orchestratorStateRef.current = 'ERROR';
+          setEnrollProgressMsg('❌ Error saving face model. Please try again.');
+        }
+      }
+      return;
+    }
+
+    // ── Branch 2: Legacy 3-step manual enrollment (kept for fallback) ─────────
+    const step = enrollStepRef.current;
     if (step !== 'NONE') {
       handleEnrollmentTrackingStep(scaledLandmarks, pose.yaw);
       return;
     }
 
-    // Otherwise standard liveness challenges verification loop
+    // ── Branch 3: VERIFICATION mode — Full Liveness Anti-Spoofing REQUIRED ─────
+    // BLINK + SMILE + TURN_LEFT challenges must all pass before face matching.
+    // This is MANDATORY for the hackathon's anti-spoofing deliverable.
+    const currentChallenge = activeChallengeRef.current;
     const resState = livenessService.processFrame(scaledLandmarks, currentChallenge);
     setChallengeState(resState);
 
@@ -456,15 +508,15 @@ export const DesktopWebDashboard: React.FC = () => {
         currentChallenge: 'SUCCESS',
         progress: 1.0,
         isCalibrated: true,
-        message: 'Liveness approved! Computing face structure index lookup...',
+        message: 'Liveness approved! Running fast multi-angle face search...',
       });
 
       captureSnapshotToState();
       const realSignature = generateFaceGeometrySignature(landmarks);
       const startMs = performance.now();
       
-      // Real database dot-product query lookup over preloaded profiles list
-      const searchResult = await dbService.vectorSearch(realSignature);
+      // NEW: Use multi-angle vector search instead of simple flat embedding search
+      const searchResult = await dbService.vectorSearchMultiAngle(realSignature);
       
       const endMs = performance.now();
       setSearchLatency(endMs - startMs);
@@ -533,15 +585,26 @@ export const DesktopWebDashboard: React.FC = () => {
       alert('Please enable the camera stream first.');
       return;
     }
+    if (!newName.trim()) {
+      alert('Please enter the person\'s name first.');
+      return;
+    }
+    // Clear previous state
     setSnapFront(null);
     setSnapLeft(null);
     setSnapRight(null);
     setVectorFront(null);
     setVectorLeft(null);
     setVectorRight(null);
-    setEnrollStep('FRONT');
-    setSteadyFramesCount(0);
-    setEnrollProgressMsg('Step 1: Keep still... Align face centered front (Yaw near 0°)');
+    setEnrollFrameResult(null);
+    setEnrollSaving(false);
+
+    // Start the phone-style 6-step orchestrator
+    const userId = `NHAI-USER-${Date.now().toString().slice(-6)}`;
+    enrollmentOrchestrator.startEnrollment(userId, newName.trim(), newRole);
+    setOrchestratorState('ENROLLING');
+    orchestratorStateRef.current = 'ENROLLING';
+    setEnrollProgressMsg('Look straight at the camera...');
   };
 
   // Saves completed 3-view structural profile to Local IndexedDB
@@ -1622,27 +1685,27 @@ export const DesktopWebDashboard: React.FC = () => {
           )}
 
           {middleTab === 'enroll' && (
-            <form className="panel" style={{ padding: 0, background: 'none', border: 'none', boxShadow: 'none' }} onSubmit={handleSaveMultiViewEnrollment}>
-              <span className="select-label">Register 3-Angle Face Profile:</span>
-              
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <span className="select-label">📱 Phone-Style 6-Step Face Enrollment Wizard:</span>
+
+              {/* Name + Role form — disabled during active scan */}
               <div className="form-group">
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  placeholder="Enter Full Name" 
-                  value={newName} 
-                  onChange={(e) => setNewName(e.target.value)} 
-                  disabled={enrollStep !== 'NONE'}
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="Enter Full Name (required before starting)"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  disabled={orchestratorState === 'ENROLLING' || orchestratorState === 'SAVING'}
                   required
                 />
               </div>
-              
               <div className="form-group">
-                <select 
-                  className="select-input" 
-                  value={newRole} 
+                <select
+                  className="select-input"
+                  value={newRole}
                   onChange={(e) => setNewRole(e.target.value)}
-                  disabled={enrollStep !== 'NONE'}
+                  disabled={orchestratorState === 'ENROLLING' || orchestratorState === 'SAVING'}
                 >
                   <option value="Toll Supervisor">Toll Supervisor</option>
                   <option value="Checkpost Inspector">Checkpost Inspector</option>
@@ -1651,63 +1714,161 @@ export const DesktopWebDashboard: React.FC = () => {
                 </select>
               </div>
 
-              {enrollStep === 'NONE' ? (
-                <button type="button" className="action-btn action-btn-primary" onClick={startMultiViewEnrollFlow}>
-                  🚀 Start 3-View Capture Flow
-                </button>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <div style={{ background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.2)', padding: '10px', borderRadius: '8px', fontSize: '12px', color: '#f59e0b', textAlign: 'center', fontWeight: '500' }}>
-                    {enrollProgressMsg}
+              {/* ── 6-Step Wizard Progress UI ── */}
+              {orchestratorState === 'ENROLLING' || orchestratorState === 'SAVING' || orchestratorState === 'COMPLETE' ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+
+                  {/* Step Pills: 6 dots showing completed / active / pending */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
+                    {ENROLLMENT_STEPS.map((stepCfg, i) => {
+                      const isDone = enrollFrameResult?.completedSteps.includes(stepCfg.step);
+                      const isActive = !isDone && enrollFrameResult?.currentStep === stepCfg.step;
+                      const ARROW_MAP: Record<string, string> = { none: '👤', up: '⬆️', down: '⬇️', left: '⬅️', right: '➡️', 'tilt-left': '↙️' };
+                      return (
+                        <div key={stepCfg.step} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                          <div style={{
+                            width: '36px', height: '36px', borderRadius: '50%',
+                            background: isDone ? '#10b981' : isActive ? 'rgba(245,158,11,0.2)' : 'rgba(255,255,255,0.04)',
+                            border: `2px solid ${isDone ? '#10b981' : isActive ? '#f59e0b' : 'rgba(255,255,255,0.08)'}`,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: isDone ? '14px' : '11px',
+                            transition: 'all 0.3s ease',
+                            boxShadow: isActive ? '0 0 12px rgba(245,158,11,0.4)' : 'none',
+                          }}>
+                            {isDone ? '✓' : ARROW_MAP[stepCfg.arrow]}
+                          </div>
+                          <span style={{ fontSize: '9px', color: isDone ? '#10b981' : isActive ? '#f59e0b' : '#64748b', textAlign: 'center', lineHeight: 1.2 }}>
+                            {stepCfg.label}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
-                  {enrollStep !== 'COMPLETE' && (
-                    <div className="btn-row">
-                      <button type="button" className="action-btn" onClick={() => setEnrollStep('NONE')}>Cancel Capture</button>
+
+                  {/* Overall progress bar */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#94a3b8' }}>
+                      <span>Overall progress</span>
+                      <span style={{ color: '#f59e0b', fontWeight: 700 }}>
+                        {Math.round((enrollFrameResult?.overallProgress ?? 0) * 100)}%
+                      </span>
+                    </div>
+                    <div style={{ height: '6px', background: 'rgba(255,255,255,0.06)', borderRadius: '3px', overflow: 'hidden' }}>
+                      <div style={{
+                        height: '100%',
+                        width: `${(enrollFrameResult?.overallProgress ?? 0) * 100}%`,
+                        background: 'linear-gradient(90deg, #f59e0b, #10b981)',
+                        borderRadius: '3px',
+                        transition: 'width 0.2s ease',
+                      }} />
+                    </div>
+                  </div>
+
+                  {/* Current step guidance message with step progress */}
+                  <div style={{
+                    background: orchestratorState === 'COMPLETE'
+                      ? 'rgba(16, 185, 129, 0.08)'
+                      : 'rgba(245, 158, 11, 0.08)',
+                    border: `1px solid ${orchestratorState === 'COMPLETE' ? 'rgba(16,185,129,0.25)' : 'rgba(245,158,11,0.2)'}`,
+                    borderRadius: '10px', padding: '12px',
+                    textAlign: 'center',
+                  }}>
+                    <div style={{ fontSize: '13px', fontWeight: 600, color: orchestratorState === 'COMPLETE' ? '#10b981' : '#f59e0b', marginBottom: '6px' }}>
+                      {enrollProgressMsg}
+                    </div>
+                    {orchestratorState === 'ENROLLING' && enrollFrameResult && (
+                      <>
+                        <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '6px' }}>
+                          Step {enrollFrameResult.completedSteps.length + 1} of {ENROLLMENT_STEPS.length} — Hold position steady
+                        </div>
+                        <div style={{ height: '4px', background: 'rgba(255,255,255,0.06)', borderRadius: '2px', overflow: 'hidden' }}>
+                          <div style={{
+                            height: '100%',
+                            width: `${enrollFrameResult.stepProgress * 100}%`,
+                            background: '#f59e0b',
+                            borderRadius: '2px',
+                            transition: 'width 0.1s ease',
+                          }} />
+                        </div>
+                      </>
+                    )}
+                    {orchestratorState === 'SAVING' && (
+                      <div style={{ fontSize: '10px', color: '#06b6d4' }}>⏳ Building multi-angle face model...</div>
+                    )}
+                  </div>
+
+                  {/* Cancel button during active scan */}
+                  {orchestratorState === 'ENROLLING' && (
+                    <button
+                      type="button"
+                      className="action-btn"
+                      onClick={() => {
+                        enrollmentOrchestrator.cancelEnrollment();
+                        setOrchestratorState('IDLE');
+                        orchestratorStateRef.current = 'IDLE';
+                        setEnrollFrameResult(null);
+                        setEnrollProgressMsg('Type your name and click "Start 6-Step Face Scan".');
+                      }}
+                    >
+                      ✕ Cancel Scan
+                    </button>
+                  )}
+
+                  {/* Captured angle thumbnails — filled in as steps complete */}
+                  {enrollFrameResult && enrollFrameResult.completedSteps.length > 0 && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '6px' }}>
+                      {ENROLLMENT_STEPS.map((stepCfg) => {
+                        const captured = enrollFrameResult.completedSteps.includes(stepCfg.step);
+                        return (
+                          <div key={stepCfg.step} style={{
+                            height: '48px', borderRadius: '6px',
+                            border: `1px solid ${captured ? '#10b981' : 'rgba(255,255,255,0.06)'}`,
+                            background: captured ? 'rgba(16,185,129,0.08)' : 'rgba(255,255,255,0.02)',
+                            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px',
+                          }}>
+                            <span style={{ fontSize: '14px' }}>{captured ? '✓' : '○'}</span>
+                            <span style={{ fontSize: '8px', color: captured ? '#10b981' : '#374151' }}>{stepCfg.label}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {orchestratorState === 'COMPLETE' && snapFront && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px', background: 'rgba(16,185,129,0.08)', borderRadius: '10px', border: '1px solid rgba(16,185,129,0.25)' }}>
+                      <img src={snapFront} alt="enrolled" style={{ width: '48px', height: '48px', borderRadius: '50%', objectFit: 'cover', border: '2px solid #10b981' }} />
+                      <div>
+                        <div style={{ fontSize: '13px', fontWeight: 700, color: '#10b981' }}>✅ Enrollment Complete</div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>{newName} enrolled with 6-angle face model</div>
+                      </div>
                     </div>
                   )}
                 </div>
+              ) : (
+                /* ── Initial State: Start button ── */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ fontSize: '11px', color: '#64748b', lineHeight: 1.6, padding: '10px', background: 'rgba(6,182,212,0.04)', borderRadius: '8px', border: '1px solid rgba(6,182,212,0.1)' }}>
+                    📱 <strong>Phone-Style Enrollment:</strong> The wizard will guide you through 6 head positions — straight, up, down, left, right, and tilt. Each angle is captured automatically when you hold the pose for ~1 second. No button presses needed.
+                  </div>
+                  {orchestratorState === 'ERROR' && (
+                    <div style={{ fontSize: '12px', color: '#ef4444', padding: '8px', background: 'rgba(239,68,68,0.08)', borderRadius: '8px', border: '1px solid rgba(239,68,68,0.2)' }}>
+                      ⚠️ {enrollmentOrchestrator.getStatus().errorMessage}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="action-btn action-btn-primary"
+                    onClick={startMultiViewEnrollFlow}
+                    disabled={!streamActive}
+                  >
+                    {streamActive ? '🚀 Start 6-Step Face Scan' : '📷 Enable Camera First'}
+                  </button>
+                  <div style={{ fontSize: '10px', color: '#374151', textAlign: 'center' }}>
+                    Enable the real camera (left panel) before starting enrollment
+                  </div>
+                </div>
               )}
-
-              {/* 3-View Snapshot visualizer grids */}
-              <div className="multiview-box">
-                <div className={`snap-card ${enrollStep === 'FRONT' ? 'active' : ''} ${snapFront ? 'locked' : ''}`}>
-                  {snapFront ? (
-                    <img src={snapFront} className="snap-thumbnail" alt="Front Profile" />
-                  ) : (
-                    <>
-                      <span style={{ fontSize: '16px' }}>👤</span>
-                      <span>1. FRONT VIEW</span>
-                    </>
-                  )}
-                </div>
-                <div className={`snap-card ${enrollStep === 'LEFT' ? 'active' : ''} ${snapLeft ? 'locked' : ''}`}>
-                  {snapLeft ? (
-                    <img src={snapLeft} className="snap-thumbnail" alt="Left Profile" />
-                  ) : (
-                    <>
-                      <span style={{ fontSize: '16px' }}>👈</span>
-                      <span>2. LEFT PROFILE</span>
-                    </>
-                  )}
-                </div>
-                <div className={`snap-card ${enrollStep === 'RIGHT' ? 'active' : ''} ${snapRight ? 'locked' : ''}`}>
-                  {snapRight ? (
-                    <img src={snapRight} className="snap-thumbnail" alt="Right Profile" />
-                  ) : (
-                    <>
-                      <span style={{ fontSize: '16px' }}>👉</span>
-                      <span>3. RIGHT PROFILE</span>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {enrollStep === 'COMPLETE' && (
-                <button type="submit" className="action-btn action-btn-primary" style={{ background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)', boxShadow: '0 0 15px rgba(16,185,129,0.3)' }}>
-                  ✔️ Save Face Structure Profile
-                </button>
-              )}
-            </form>
+            </div>
           )}
         </section>
 
