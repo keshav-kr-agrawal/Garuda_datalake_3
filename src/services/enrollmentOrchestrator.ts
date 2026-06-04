@@ -268,7 +268,7 @@ export class EnrollmentOrchestratorService {
       rawEmbedding = generateGeometryEmbedding(landmarks);
     } else {
       // Built-in geometric signature fallback (128-D nose-relative distances)
-      rawEmbedding = this._geometricSignature(landmarks);
+      rawEmbedding = this.embedder.generateGeometrySignature(landmarks);
     }
 
     const angleEntry: AngleEmbedding = {
@@ -284,26 +284,4 @@ export class EnrollmentOrchestratorService {
     console.log(`[EnrollmentOrchestrator] Captured angle: ${step} (yaw=${pose.yaw.toFixed(1)}, pitch=${pose.pitch.toFixed(1)})`);
   }
 
-  /**
-   * Geometric fallback: computes 128 nose-relative 3D distances across landmarks.
-   * Same algorithm used in DesktopWebDashboard.generateFaceGeometrySignature().
-   */
-  private _geometricSignature(landmarks: Landmark3D[]): Float32Array {
-    const vector = new Float32Array(128);
-    const origin = landmarks[1]; // Nose tip
-
-    for (let i = 0; i < 128; i++) {
-      const targetIdx = (i * 3 + 17) % landmarks.length;
-      const pt = landmarks[targetIdx];
-      if (pt && origin) {
-        const dx = pt.x - origin.x;
-        const dy = pt.y - origin.y;
-        const dz = pt.z - origin.z;
-        vector[i] = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      } else {
-        vector[i] = 1.0;
-      }
-    }
-    return this.embedder.l2Normalize(vector);
-  }
 }

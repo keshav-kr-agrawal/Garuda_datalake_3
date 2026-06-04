@@ -8,6 +8,8 @@
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest",
+    "build": "vite build",
+    "ml:check": "node scripts/ml-footprint-check.js",
     "web": "vite"
   },
   "dependencies": {

@@ -130,12 +130,15 @@ describe('NHAI Offline Facial Recognition & Liveness System Tests', () => {
       expect(leftPose.yaw).toBeGreaterThan(10.0);
     });
 
-    test('generateChallengeSequence returns a shuffled array of BLINK, SMILE, TURN_LEFT', () => {
+    test('generateChallengeSequence returns 3 unique challenges from the offline liveness pool', () => {
       const sequence = liveness.generateChallengeSequence();
+      const validChallenges = ['BLINK', 'SMILE', 'TURN_LEFT', 'TURN_RIGHT'];
+
       expect(sequence.length).toBe(3);
-      expect(sequence).toContain('BLINK');
-      expect(sequence).toContain('SMILE');
-      expect(sequence).toContain('TURN_LEFT');
+      expect(new Set(sequence).size).toBe(3);
+      sequence.forEach(challenge => {
+        expect(validChallenges).toContain(challenge);
+      });
     });
   });
 

@@ -101,6 +101,13 @@ export interface ChallengeState {
   progress: number; // 0 to 1
   isCalibrated: boolean;
   message: string;
+  metrics?: {
+    ear: number;
+    mar: number;
+    yaw: number;
+    pitch: number;
+    roll: number;
+  };
 }
 
 export class LivenessMathService {
@@ -118,7 +125,9 @@ export class LivenessMathService {
   private hasBlinked = false;
   private blinkDetectCount = 0;
   private hasSmiled = false;
-  private hasTurned = false;
+  private hasTurnedLeft = false;
+  private hasTurnedRight = false;
+  private activeChallenge: LivenessChallenge | null = null;
 
   // ─── Enrollment state ──────────────────────────────────────────────────────
   private enrollmentStepIdx = 0;
@@ -178,7 +187,22 @@ export class LivenessMathService {
     this.hasBlinked = false;
     this.blinkDetectCount = 0;
     this.hasSmiled = false;
-    this.hasTurned = false;
+    this.hasTurnedLeft = false;
+    this.hasTurnedRight = false;
+    this.activeChallenge = null;
+  }
+
+  /**
+   * Clears only the per-challenge completion state while preserving calibrated
+   * EAR/MAR baselines. This lets a session move from BLINK -> SMILE -> TURN
+   * without forcing the user through calibration again on every step.
+   */
+  public resetChallengeState(): void {
+    this.hasBlinked = false;
+    this.blinkDetectCount = 0;
+    this.hasSmiled = false;
+    this.hasTurnedLeft = false;
+    this.hasTurnedRight = false;
   }
 
   /**
@@ -387,9 +411,15 @@ export class LivenessMathService {
     landmarks: Landmark3D[], 
     activeChallenge: LivenessChallenge
   ): ChallengeState {
+    if (this.activeChallenge !== activeChallenge) {
+      this.activeChallenge = activeChallenge;
+      this.resetChallengeState();
+    }
+
     const ear = this.calculateEAR(landmarks);
     const mar = this.calculateMAR(landmarks);
     const { yaw, pitch, roll } = this.estimatePose(landmarks);
+    const metrics = { ear, mar, yaw, pitch, roll };
 
     const calibrated = this.calibrate(ear, mar);
     if (!calibrated) {
@@ -398,6 +428,7 @@ export class LivenessMathService {
         progress: this.calibrationFrames / this.calibrationLimit,
         isCalibrated: false,
         message: 'Calibrating system... Keep eyes open',
+        metrics,
       };
     }
 
@@ -438,24 +469,24 @@ export class LivenessMathService {
         // Yaw threshold for left turn (> 15 degrees)
         const leftYawThreshold = 15.0;
         if (yaw > leftYawThreshold) {
-          this.hasTurned = true;
+          this.hasTurnedLeft = true;
         }
 
-        progress = this.hasTurned ? 1 : Math.min(Math.max(yaw, 0) / leftYawThreshold, 0.9);
-        message = this.hasTurned ? 'Left turn detected!' : 'Slowly turn your head left';
-        success = this.hasTurned;
+        progress = this.hasTurnedLeft ? 1 : Math.min(Math.max(yaw, 0) / leftYawThreshold, 0.9);
+        message = this.hasTurnedLeft ? 'Left turn detected!' : 'Slowly turn your head left';
+        success = this.hasTurnedLeft;
         break;
 
       case 'TURN_RIGHT':
         // Yaw threshold for right turn (< -15 degrees)
         const rightYawThreshold = -15.0;
         if (yaw < rightYawThreshold) {
-          this.hasTurned = true;
+          this.hasTurnedRight = true;
         }
 
-        progress = this.hasTurned ? 1 : Math.min(Math.max(-yaw, 0) / Math.abs(rightYawThreshold), 0.9);
-        message = this.hasTurned ? 'Right turn detected!' : 'Slowly turn your head right';
-        success = this.hasTurned;
+        progress = this.hasTurnedRight ? 1 : Math.min(Math.max(-yaw, 0) / Math.abs(rightYawThreshold), 0.9);
+        message = this.hasTurnedRight ? 'Right turn detected!' : 'Slowly turn your head right';
+        success = this.hasTurnedRight;
         break;
 
       case 'SUCCESS':
@@ -464,6 +495,7 @@ export class LivenessMathService {
           progress: 1.0,
           isCalibrated: true,
           message: 'Liveness verification successful!',
+          metrics,
         };
 
       case 'FAILED':
@@ -472,6 +504,7 @@ export class LivenessMathService {
           progress: 0.0,
           isCalibrated: true,
           message: 'Verification failed. Try again.',
+          metrics,
         };
     }
 
@@ -482,6 +515,7 @@ export class LivenessMathService {
         progress: 1.0,
         isCalibrated: true,
         message,
+        metrics,
       };
     }
 
@@ -490,6 +524,7 @@ export class LivenessMathService {
       progress,
       isCalibrated: true,
       message,
+      metrics,
     };
   }
 }

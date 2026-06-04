@@ -6,6 +6,12 @@
 > A fully offline, lightweight, tamper-proof facial authentication system built in React Native —
 > designed to drop seamlessly into the existing **NHAI Datalake 3.0** app architecture.
 
+## Current ML Readiness
+
+The project contains real offline TFLite model assets, liveness mathematics, vector matching, and web-based live ML validation labs. The React Native mobile shell includes the model-loading path and Android assets, but the final native camera frame processor still needs to be wired before claiming a fully validated field-ready mobile biometric engine.
+
+See [ML_CONTEXT.md](./ML_CONTEXT.md) for the exact ML status, fixes applied, remaining work, and recommended proposal wording.
+
 ---
 
 ## Table of Contents

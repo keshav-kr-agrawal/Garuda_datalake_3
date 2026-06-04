@@ -597,24 +597,7 @@ export const DesktopWebDashboard: React.FC = () => {
 
   // Computes structured 128D mathematical vector of face geometry proportions
   const generateFaceGeometrySignature = (landmarks: any[]): Float32Array => {
-    const vector = new Float32Array(128);
-    const origin = landmarks[1]; // Nose Tip
-
-    for (let i = 0; i < 128; i++) {
-      const targetIdx = (i * 3 + 17) % landmarks.length;
-      const pt = landmarks[targetIdx];
-      
-      if (pt && origin) {
-        const dx = pt.x - origin.x;
-        const dy = pt.y - origin.y;
-        const dz = pt.z - origin.z;
-        vector[i] = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      } else {
-        vector[i] = 1.0;
-      }
-    }
-
-    return embedderService.l2Normalize(vector);
+    return embedderService.generateGeometrySignature(landmarks);
   };
 
   const startMultiViewEnrollFlow = () => {
@@ -1713,8 +1696,6 @@ export const DesktopWebDashboard: React.FC = () => {
                     <span style={{ color: matchedProfile.confidence >= 0.72 ? '#10b981' : '#ef4444', marginLeft: '6px' }}>
                       ({(matchedProfile.confidence * 100).toFixed(1)}% similarity)
                     </span>
-                  </div>
-                )}
                   </div>
                 )}
               </div>
