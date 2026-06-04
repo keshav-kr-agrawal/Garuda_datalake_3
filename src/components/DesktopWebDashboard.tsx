@@ -5,6 +5,7 @@ import { CryptographicLedgerService } from '../services/cryptographicLedger';
 import { SyncManagerService } from '../services/syncManager';
 import { LocalDatabaseService, EnrolledUser, AuditLog } from '../services/databaseSchema';
 import { EnrollmentOrchestratorService, OrchestratorState } from '../services/enrollmentOrchestrator';
+import { CLAHEProcessor } from '../services/claheProcessor';
 
 // Standard MediaPipe Landmark Contour Indices for high-fidelity drawing
 const FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
@@ -24,11 +25,17 @@ export const DesktopWebDashboard: React.FC = () => {
   const dbService = LocalDatabaseService.getInstance();
   // Phone-style enrollment orchestrator
   const enrollmentOrchestrator = EnrollmentOrchestratorService.getInstance();
+  // CLAHE pre-processor for outdoor lighting robustness
+  const claheProcessor = CLAHEProcessor.getInstance();
 
   // Webcam & Canvas Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null); // hidden for snaps
-  const meshCanvasRef = useRef<HTMLCanvasElement | null>(null); // transparent for wireframe overlays
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);       // hidden for snaps
+  const meshCanvasRef = useRef<HTMLCanvasElement | null>(null);   // transparent wireframe overlay
+  const claheCanvasRef = useRef<HTMLCanvasElement | null>(null);  // CLAHE pre-processing buffer
+
+  // Pipeline timing ref — measures end-to-end latency from first face detection to VERIFIED/FAILED
+  const pipelineStartTimeRef = useRef<number | null>(null);
 
   // Active stream and helper models states
   const [streamActive, setStreamActive] = useState(false);
@@ -71,6 +78,8 @@ export const DesktopWebDashboard: React.FC = () => {
   const [activeChallengeIdx, setActiveChallengeIdx] = useState(0);
   const [statusColor, setStatusColor] = useState<'amber' | 'emerald' | 'crimson'>('amber');
   const [searchLatency, setSearchLatency] = useState<number | null>(null);
+  const [claheLatencyMs, setClaheLatencyMs] = useState<number>(0);
+  const [totalPipelineLatencyMs, setTotalPipelineLatencyMs] = useState<number | null>(null);
   const [matchedProfile, setMatchedProfile] = useState<{ user: EnrolledUser | null; confidence: number } | null>(null);
   
   // Real Multi-View Enrollment State — phone-style 6-step wizard
@@ -216,11 +225,33 @@ export const DesktopWebDashboard: React.FC = () => {
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         
+        // Create hidden CLAHE pre-processing canvas (same resolution as video)
+        if (!claheCanvasRef.current) {
+          const claheCanvas = document.createElement('canvas');
+          claheCanvas.width = 480;
+          claheCanvas.height = 480;
+          claheCanvasRef.current = claheCanvas;
+        }
+
         // Instantiate MediaPipe Camera helper
+        // Each frame: draw video to CLAHE canvas → enhance → send enhanced frame to FaceMesh
         const cameraHelper = new (window as any).Camera(videoRef.current, {
           onFrame: async () => {
-            if (videoRef.current && faceMeshRef.current) {
-              await faceMeshRef.current.send({ image: videoRef.current });
+            if (videoRef.current && faceMeshRef.current && claheCanvasRef.current) {
+              // Draw raw video frame onto CLAHE canvas
+              const claheCtx = claheCanvasRef.current.getContext('2d', { willReadFrequently: true });
+              if (claheCtx) {
+                claheCtx.drawImage(videoRef.current, 0, 0, 480, 480);
+                // Apply CLAHE contrast normalization (outdoor lighting robustness)
+                const claheMs = claheProcessor.processCanvas(claheCanvasRef.current);
+                setClaheLatencyMs(claheMs);
+              }
+              // Send CLAHE-enhanced canvas to MediaPipe (not raw video)
+              await faceMeshRef.current.send({ image: claheCanvasRef.current });
+              // Start pipeline timer on first face detection attempt
+              if (pipelineStartTimeRef.current === null) {
+                pipelineStartTimeRef.current = performance.now();
+              }
             }
           },
           width: 480,
@@ -515,11 +546,17 @@ export const DesktopWebDashboard: React.FC = () => {
       const realSignature = generateFaceGeometrySignature(landmarks);
       const startMs = performance.now();
       
-      // NEW: Use multi-angle vector search instead of simple flat embedding search
+      // Multi-angle vector search
       const searchResult = await dbService.vectorSearchMultiAngle(realSignature);
       
       const endMs = performance.now();
       setSearchLatency(endMs - startMs);
+
+      // Record total end-to-end pipeline latency (first frame → final verdict)
+      if (pipelineStartTimeRef.current !== null) {
+        setTotalPipelineLatencyMs(endMs - pipelineStartTimeRef.current);
+        pipelineStartTimeRef.current = null; // reset for next session
+      }
 
       if (searchResult.user && searchResult.similarity >= 0.72) {
         setStatusColor('emerald');
@@ -1614,33 +1651,70 @@ export const DesktopWebDashboard: React.FC = () => {
                 </button>
               </div>
 
-              {/* Search Latency Performance Benchmark */}
+              {/* Performance Benchmark Panel */}
               <div className="latency-container">
-                <span className="latency-title">Offline Matrix Search Latency:</span>
-                <div className="latency-num">
-                  {searchLatency !== null ? (
-                    <>
-                      ⚡ {searchLatency.toFixed(2)} ms 
-                      <span style={{ fontSize: '11px', color: '#64748b', fontWeight: 'normal' }}>
-                        (Lookups: 10,000 matches resolved)
-                      </span>
-                    </>
-                  ) : (
-                    <span style={{ color: '#64748b', fontWeight: 'normal' }}>Awaiting verification match...</span>
-                  )}
+                <span className="latency-title">⚡ Real-Time Performance Benchmarks:</span>
+
+                {/* CLAHE Pre-processing */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', marginTop: '6px' }}>
+                  <span style={{ color: '#94a3b8' }}>CLAHE Pre-processing (per frame)</span>
+                  <span style={{ fontFamily: 'monospace', color: claheLatencyMs > 0 ? '#10b981' : '#64748b', fontWeight: 700 }}>
+                    {claheLatencyMs > 0 ? `${claheLatencyMs.toFixed(1)} ms` : 'Inactive'}
+                  </span>
+                </div>
+                <div className="latency-bar-container" style={{ marginBottom: '8px' }}>
+                  <div className="latency-bar" style={{
+                    width: claheLatencyMs > 0 ? `${Math.min(100, (claheLatencyMs / 15) * 100)}%` : '0%',
+                    background: '#06b6d4'
+                  }} />
+                </div>
+
+                {/* Vector Search */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px' }}>
+                  <span style={{ color: '#94a3b8' }}>Multi-Angle Vector Search (10k DB)</span>
+                  <span style={{ fontFamily: 'monospace', color: searchLatency !== null ? '#10b981' : '#64748b', fontWeight: 700 }}>
+                    {searchLatency !== null ? `${searchLatency.toFixed(1)} ms` : 'Awaiting...'}
+                  </span>
+                </div>
+                <div className="latency-bar-container" style={{ marginBottom: '8px' }}>
+                  <div className="latency-bar" style={{
+                    width: searchLatency !== null ? `${Math.min(100, (searchLatency / 30) * 100)}%` : '0%',
+                    background: '#10b981'
+                  }} />
+                </div>
+
+                {/* Total Pipeline */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px' }}>
+                  <span style={{ color: '#94a3b8' }}>Total End-to-End (detect → verdict)</span>
+                  <span style={{
+                    fontFamily: 'monospace',
+                    color: totalPipelineLatencyMs !== null
+                      ? (totalPipelineLatencyMs < 1000 ? '#10b981' : '#ef4444')
+                      : '#64748b',
+                    fontWeight: 700
+                  }}>
+                    {totalPipelineLatencyMs !== null ? `${totalPipelineLatencyMs.toFixed(0)} ms` : 'Awaiting...'}
+                  </span>
                 </div>
                 <div className="latency-bar-container">
                   <div className="latency-bar" style={{
-                    width: searchLatency !== null ? `${Math.min(100, (searchLatency / 30) * 100)}%` : '0%'
-                  }}></div>
+                    width: totalPipelineLatencyMs !== null ? `${Math.min(100, (totalPipelineLatencyMs / 1000) * 100)}%` : '0%',
+                    background: totalPipelineLatencyMs !== null && totalPipelineLatencyMs < 1000 ? '#10b981' : '#ef4444'
+                  }} />
                 </div>
+                <div style={{ fontSize: '10px', color: '#374151', marginTop: '4px', textAlign: 'right' }}>
+                  Target: &lt; 1000 ms on mid-range device
+                </div>
+
                 {matchedProfile && (
-                  <div style={{ fontSize: '12px', marginTop: '4px', borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '6px' }}>
-                    <span style={{ color: '#64748b' }}>Matching Profile: </span>
-                    <strong>{matchedProfile.user ? matchedProfile.user.name : 'Unknown Intruder'}</strong>
+                  <div style={{ fontSize: '12px', marginTop: '8px', borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '6px' }}>
+                    <span style={{ color: '#64748b' }}>Matched Profile: </span>
+                    <strong>{matchedProfile.user ? matchedProfile.user.name : 'Unknown'}</strong>
                     <span style={{ color: matchedProfile.confidence >= 0.72 ? '#10b981' : '#ef4444', marginLeft: '6px' }}>
                       ({(matchedProfile.confidence * 100).toFixed(1)}% similarity)
                     </span>
+                  </div>
+                )}
                   </div>
                 )}
               </div>
