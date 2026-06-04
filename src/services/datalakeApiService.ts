@@ -4,13 +4,21 @@
  * NHAI Datalake 3.0 — NIC Backend Integration Layer
  * ─────────────────────────────────────────────────
  *
- * HOW DATALAKE 3.0 ACTUALLY WORKS (Researched):
- * ───────────────────────────────────────────────
- * • Developer: Digital India Corporation (DIC) + NHAI
- * • Backend:   .NET Web API hosted on NIC (National Informatics Centre) servers
- * • Package:   com.digitalindiacorporation.datalake  (Android 8.0+, iOS 12+)
- * • Auth:      Token-based (JWT/Bearer) via NIC Identity Management
- * • Helpdesk:  digitalindiacorporation.in (tickets for auth/attendance issues)
+ * HOW DATALAKE 3.0 ACTUALLY WORKS (Research-Verified from APKPure v1.0.27):
+ * ────────────────────────────────────────────────────────────────────────────
+ * • Developer:   Digital India Corporation (DIC) + NHAI
+ * • Backend:     .NET Web API on NIC (National Informatics Centre) servers
+ * • Package:     com.digitalindiacorporation.datalake  (Android 8.0+, iOS 12+)
+ * • Auth:        Token-based (JWT/Bearer) via NIC Identity Management
+ * • Helpdesk:    digitalindiacorporation.in
+ *
+ * NOTE ON SYNC (Hackathon Problem Statement Requirement):
+ * ────────────────────────────────────────────────────────
+ * The problem statement explicitly requires: "sync with AWS server after
+ * network connectivity is restored (local data to be purged)".
+ * Therefore our architecture uses TWO backends:
+ *   1. NIC Datalake 3.0 API  → regular auth + online attendance (this file)
+ *   2. AWS API Gateway + S3   → offline batch sync/purge (awsSyncService.ts)
  *
  * WHAT THE EXISTING APP DOES (Online Mode):
  * ──────────────────────────────────────────
@@ -62,6 +70,7 @@ import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CryptographicLedgerService } from './cryptographicLedger';
 import { LocalDatabaseService } from './databaseSchema';
+import { AWSSyncService } from './awsSyncService'; // AWS sync — mandatory per problem statement
 
 // ─── NIC API Configuration ────────────────────────────────────────────────────
 // These mirror the real Datalake 3.0 backend endpoints on NIC infrastructure.
@@ -345,14 +354,14 @@ export class DatalakeApiService {
           record
         );
         if (response?.success) {
-          // Also write to local audit ledger for tamper-evident logging
-          await this.ledger.appendBlock({
-            userId: params.employeeId,
-            latitude: params.gpsLatitude,
-            longitude: params.gpsLongitude,
-            confidence: params.matchConfidence,
-            status: response.status === 'VERIFIED' ? 'VERIFIED' : 'FAILED',
-          });
+          // Write to local SHA-256 audit ledger for tamper-evident logging
+          await this.ledger.recordTransaction(
+            params.employeeId,
+            params.gpsLatitude,
+            params.gpsLongitude,
+            params.matchConfidence,
+            response.status === 'VERIFIED' ? 'VERIFIED' : 'FAILED'
+          );
 
           return {
             success: true,
@@ -368,23 +377,22 @@ export class DatalakeApiService {
     }
 
     // OFFLINE PATH: Queue the record with cryptographic proof
-    // This is the core innovation of our hackathon module
-    const blockHash = await this.ledger.appendBlock({
-      userId:     params.employeeId,
-      latitude:   params.gpsLatitude,
-      longitude:  params.gpsLongitude,
-      confidence: params.matchConfidence,
-      status:     'VERIFIED',
-    });
-
-    const ledger = await this.db.getLedger();
-    const lastBlock = ledger[ledger.length - 1];
+    // This is the core innovation of our hackathon module.
+    // The SHA-256 block ensures each offline record is tamper-evident
+    // and can be cryptographically verified by the AWS server on sync.
+    const block = await this.ledger.recordTransaction(
+      params.employeeId,
+      params.gpsLatitude,
+      params.gpsLongitude,
+      params.matchConfidence,
+      'VERIFIED'
+    );
 
     const offlineEntry: OfflineQueueEntry = {
       ...record,
       isOfflineRecord:   true,
-      offlineProofHash:  lastBlock?.hash,
-      offlinePrevHash:   lastBlock?.prevHash,
+      offlineProofHash:  block?.hash,
+      offlinePrevHash:   block?.prevHash,
       localId:           `LOCAL-${timestamp}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`,
       enqueuedAt:        timestamp,
       retryCount:        0,
@@ -484,12 +492,19 @@ export class DatalakeApiService {
       return { success: false, syncedCount: 0, rejectedCount: 0, remainingCount: pending.length, message: 'Network error during sync.' };
     }
 
-    // Purge synced records older than 48h
+    // Purge synced records older than 48h (mandatory per problem statement)
     const cutoff = Date.now() - 48 * 60 * 60 * 1000;
     this.offlineQueue = this.offlineQueue.filter(
       e => !(e.syncStatus === 'SYNCED' && e.enqueuedAt < cutoff)
     );
     await this._persistOfflineQueue();
+
+    // Also trigger AWS sync (mandatory deliverable per hackathon problem statement:
+    // "sync with AWS server after network connectivity is restored")
+    // AWS receives the full verified+signed batch for central audit storage.
+    AWSSyncService.getInstance().triggerFullSync().catch(e => {
+      console.warn('[DatalakeAPI] AWS background sync error (non-blocking):', e);
+    });
 
     const remainingCount = this.offlineQueue.filter(e => e.syncStatus === 'PENDING').length;
     console.log(`[DatalakeAPI] Sync complete. Synced: ${syncedCount}, Rejected: ${rejectedCount}, Remaining: ${remainingCount}`);
