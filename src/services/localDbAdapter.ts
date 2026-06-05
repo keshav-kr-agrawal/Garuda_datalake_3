@@ -144,7 +144,7 @@ export class SQLiteEngine {
         }
 
         // One-time database reset for June 5 updates (clear old schema & data)
-        const RESET_KEY = '@nhai_db_cleared_june_05_v4';
+        const RESET_KEY = '@nhai_db_cleared_june_05_v5';
         if (typeof window !== 'undefined' && !window.localStorage.getItem(RESET_KEY)) {
           console.log('[SQLiteEngine] Performing one-time SQLite database reset...');
           try {

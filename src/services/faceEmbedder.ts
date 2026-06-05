@@ -310,22 +310,12 @@ export class FaceEmbedderService {
   }
 
   /**
-   * Returns the appropriate threshold for match verification.
-   * If in geometric-fallback mode (web landmark fallback), we use 0.58 to accommodate
-   * pose/scale deviations. If the high-accuracy TFLite model is active, we enforce 0.72.
-   */
-  public getSimilarityThreshold(): number {
-    return this.getStatus().mode === 'geometric-fallback' ? 0.58 : 0.72;
-  }
-
-  /**
    * Verifies if two face embeddings are a match based on our empirical similarity threshold.
    */
   public verifyMatch(embeddingA: Float32Array, embeddingB: Float32Array): { match: boolean; confidence: number } {
     const similarity = this.compareEmbeddings(embeddingA, embeddingB);
-    const threshold = this.getSimilarityThreshold();
     return {
-      match: similarity >= threshold,
+      match: similarity >= SIMILARITY_THRESHOLD,
       confidence: similarity,
     };
   }
@@ -384,7 +374,7 @@ export class FaceEmbedderService {
     const dim = angleEmbeddings[0].embedding.length;
     const master = new Float32Array(dim);
     let totalWeight = 0;
- 
+
     for (const { step, embedding } of angleEmbeddings) {
       const weight = step === 'LOOK_CENTER' ? 2.0 : 1.0;
       const len = Math.min(dim, embedding.length);
@@ -417,7 +407,6 @@ export class FaceEmbedderService {
     let bestUserId: string | null = null;
     let bestSimilarity = -1;
     let bestAngle = 'master';
-    const threshold = this.getSimilarityThreshold();
 
     for (const model of models) {
       // 1. Check master embedding first
@@ -442,7 +431,7 @@ export class FaceEmbedderService {
     }
 
     return {
-      match: bestSimilarity >= threshold,
+      match: bestSimilarity >= SIMILARITY_THRESHOLD,
       userId: bestUserId,
       confidence: bestSimilarity,
       matchedAngle: bestAngle,

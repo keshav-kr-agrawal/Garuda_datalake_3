@@ -4,7 +4,7 @@ export interface Landmark3D {
   z: number;
 }
 
-export type LivenessChallenge = 'BLINK' | 'SMILE' | 'TURN_LEFT' | 'TURN_RIGHT' | 'SUCCESS' | 'FAILED';
+export type LivenessChallenge = 'BLINK' | 'SMILE' | 'TURN_LEFT' | 'TURN_RIGHT' | 'ALIGN_PORTRAIT' | 'SUCCESS' | 'FAILED';
 
 // ─── Phone-style Enrollment Steps ────────────────────────────────────────────
 // Mirrors iPhone Face ID / Android enrollment: guided multi-angle head scan.
@@ -33,51 +33,51 @@ export const ENROLLMENT_STEPS: EnrollmentStepConfig[] = [
     label: 'Face Forward',
     guidance: 'Look straight ahead at the camera',
     arrow: 'none',
-    requiredFrames: 20,
+    requiredFrames: 10,
     poseCheck: (yaw, pitch, roll) =>
-      Math.abs(yaw) < 18 && Math.abs(pitch) < 18 && Math.abs(roll) < 15,
+      Math.abs(yaw) < 22 && Math.abs(pitch) < 22 && Math.abs(roll) < 18,
   },
   {
     step: 'LOOK_UP',
     label: 'Look Up',
     guidance: 'Slowly tilt your head UP',
     arrow: 'up',
-    requiredFrames: 20,
+    requiredFrames: 10,
     poseCheck: (yaw, pitch, _roll) =>
-      pitch < -8 && Math.abs(yaw) < 15,
+      pitch < -5 && Math.abs(yaw) < 18,
   },
   {
     step: 'LOOK_DOWN',
     label: 'Look Down',
     guidance: 'Slowly tilt your head DOWN',
     arrow: 'down',
-    requiredFrames: 20,
+    requiredFrames: 10,
     poseCheck: (yaw, pitch, _roll) =>
-      pitch > 8 && Math.abs(yaw) < 15,
+      pitch > 5 && Math.abs(yaw) < 18,
   },
   {
     step: 'TURN_LEFT',
     label: 'Turn Left',
     guidance: 'Slowly turn your head to the LEFT',
     arrow: 'left',
-    requiredFrames: 20,
-    poseCheck: (yaw, _pitch, _roll) => yaw > 18,
+    requiredFrames: 10,
+    poseCheck: (yaw, _pitch, _roll) => yaw > 12,
   },
   {
     step: 'TURN_RIGHT',
     label: 'Turn Right',
     guidance: 'Slowly turn your head to the RIGHT',
     arrow: 'right',
-    requiredFrames: 20,
-    poseCheck: (yaw, _pitch, _roll) => yaw < -18,
+    requiredFrames: 10,
+    poseCheck: (yaw, _pitch, _roll) => yaw < -12,
   },
   {
     step: 'TILT_LEFT',
     label: 'Tilt Sideways',
     guidance: 'Gently tilt your head to the left shoulder',
     arrow: 'tilt-left',
-    requiredFrames: 18,
-    poseCheck: (_yaw, _pitch, roll) => roll > 11,
+    requiredFrames: 10,
+    poseCheck: (_yaw, _pitch, roll) => roll > 8,
   },
 ];
 
@@ -117,7 +117,7 @@ export class LivenessMathService {
   private baselineEAR = 0.30;
   private baselineMAR = 0.15;
   private calibrationFrames = 0;
-  private calibrationLimit = 15; // first 15 frames are used to calibrate
+  private calibrationLimit = 10; // first 10 frames are used to calibrate
   private earSum = 0;
   private marSum = 0;
 
@@ -478,8 +478,8 @@ export class LivenessMathService {
 
     switch (activeChallenge) {
       case 'BLINK':
-        // A blink is classified if the EAR falls below 60% of the open-eye baseline
-        const blinkThreshold = this.baselineEAR * 0.60;
+        // A blink is classified if the EAR falls below 72% of the open-eye baseline (more forgiving)
+        const blinkThreshold = this.baselineEAR * 0.72;
         
         if (ear < blinkThreshold) {
           this.blinkDetectCount++;
@@ -494,8 +494,8 @@ export class LivenessMathService {
         break;
 
       case 'SMILE':
-        // A smile is verified if the MAR increases by at least 50% above the open baseline
-        const smileThreshold = this.baselineMAR * 1.50;
+        // A smile is verified if the MAR increases by at least 28% above the open baseline (more forgiving)
+        const smileThreshold = this.baselineMAR * 1.28;
         if (mar > smileThreshold) {
           this.hasSmiled = true;
         }
@@ -506,8 +506,8 @@ export class LivenessMathService {
         break;
 
       case 'TURN_LEFT':
-        // Yaw threshold for left turn (> 15 degrees)
-        const leftYawThreshold = 15.0;
+        // Yaw threshold for left turn (> 10 degrees) (more forgiving)
+        const leftYawThreshold = 10.0;
         if (yaw > leftYawThreshold) {
           this.hasTurnedLeft = true;
         }
@@ -518,8 +518,8 @@ export class LivenessMathService {
         break;
 
       case 'TURN_RIGHT':
-        // Yaw threshold for right turn (< -15 degrees)
-        const rightYawThreshold = -15.0;
+        // Yaw threshold for right turn (< -10 degrees) (more forgiving)
+        const rightYawThreshold = -10.0;
         if (yaw < rightYawThreshold) {
           this.hasTurnedRight = true;
         }

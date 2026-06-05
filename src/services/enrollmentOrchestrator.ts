@@ -199,8 +199,7 @@ export class EnrollmentOrchestratorService {
       // Check if this face matches an existing user in the database
       const dbService = LocalDatabaseService.getInstance();
       const matchResult = await dbService.vectorSearchMultiAngle(masterF32);
-      const threshold = this.embedder.getSimilarityThreshold();
-      if (matchResult.user && matchResult.similarity >= threshold) {
+      if (matchResult.user && matchResult.similarity >= 0.72) {
         console.log(`[EnrollmentOrchestrator] Face already registered under user: ${matchResult.user.name} (${matchResult.user.id})`);
         this.errorMessage = `ALREADY_REGISTERED:${matchResult.user.name}:${matchResult.user.id}`;
         this.state = 'COMPLETE';

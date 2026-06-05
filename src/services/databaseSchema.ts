@@ -127,18 +127,53 @@ export class LocalDatabaseService {
 
     for (let i = 0; i < users.length; i++) {
       const user = users[i] as any;
-      const dbEmbedding = user._floatEmbedding || (user._floatEmbedding = new Float32Array(user.embedding));
-      const dbLen = dbEmbedding.length;
-      const len = qLen < dbLen ? qLen : dbLen;
+      
+      // We check all frontal-oriented embeddings for this user:
+      // - LOOK_CENTER (frontal baseline)
+      // - masterEmbedding / user.embedding (composite average / legacy flat)
+      // - LOOK_UP, LOOK_DOWN, TILT_LEFT (minor vertical/roll variations)
+      // We exclude TURN_LEFT and TURN_RIGHT to prevent profile-angle false positives.
+      const candidateEmbeddings: Float32Array[] = [];
 
-      // Compute dot product (both vectors are pre-L2-normalized)
-      let dotProduct = 0;
-      for (let j = 0; j < len; j++) {
-        dotProduct += queryEmbedding[j] * dbEmbedding[j];
+      // Add legacy/master embedding
+      if (user.embedding) {
+        candidateEmbeddings.push(user._floatEmbedding || (user._floatEmbedding = new Float32Array(user.embedding)));
+      }
+      if (user.faceModel && user.faceModel.masterEmbedding) {
+        candidateEmbeddings.push(user._masterFloatEmbedding || (user._masterFloatEmbedding = new Float32Array(user.faceModel.masterEmbedding)));
       }
 
-      if (dotProduct > maxSimilarity) {
-        maxSimilarity = dotProduct;
+      // Add frontal-ish angle embeddings
+      if (user.faceModel && user.faceModel.angleEmbeddings) {
+        for (const angle of user.faceModel.angleEmbeddings) {
+          if (angle.step !== 'TURN_LEFT' && angle.step !== 'TURN_RIGHT') {
+            const angleKey = `_angle_${angle.step}`;
+            if (!user[angleKey]) {
+              user[angleKey] = new Float32Array(angle.embedding);
+            }
+            candidateEmbeddings.push(user[angleKey]);
+          }
+        }
+      }
+
+      // Find the best similarity among all candidates for this user
+      let userBestSimilarity = -1;
+      for (const dbEmbedding of candidateEmbeddings) {
+        const dbLen = dbEmbedding.length;
+        const len = qLen < dbLen ? qLen : dbLen;
+
+        let dotProduct = 0;
+        for (let j = 0; j < len; j++) {
+          dotProduct += queryEmbedding[j] * dbEmbedding[j];
+        }
+
+        if (dotProduct > userBestSimilarity) {
+          userBestSimilarity = dotProduct;
+        }
+      }
+
+      if (userBestSimilarity > maxSimilarity) {
+        maxSimilarity = userBestSimilarity;
         bestUser = user;
       }
     }
