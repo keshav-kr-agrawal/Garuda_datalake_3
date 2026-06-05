@@ -469,8 +469,8 @@ export const DesktopWebDashboard: React.FC = () => {
   const handleFaceMeshResults = async (results: any) => {
     const video = videoRef.current;
     if (!video) return;
-    const vWidth = video.videoWidth || 480;
-    const vHeight = video.videoHeight || 480;
+    const vWidth = results.image ? (results.image.width || results.image.videoWidth || 480) : (video.videoWidth || 480);
+    const vHeight = results.image ? (results.image.height || results.image.videoHeight || 480) : (video.videoHeight || 480);
 
     // Draw background video feed (raw or CLAHE) even if face is not detected to prevent screen freezing
     if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
@@ -524,7 +524,7 @@ export const DesktopWebDashboard: React.FC = () => {
     if (orchestratorStateRef.current === 'ENROLLING') {
       const frameResult = await enrollmentOrchestrator.processFrame(
         scaledLandmarks,
-        generateRealFaceEmbedding
+        async (lms) => generateRealFaceEmbedding(lms, results.image)
       );
       if (frameResult) {
         setEnrollFrameResult({ ...frameResult });
@@ -533,7 +533,7 @@ export const DesktopWebDashboard: React.FC = () => {
         const status = enrollmentOrchestrator.getStatus();
         if (status.capturedAngles.length > capturedStepPhotos.length) {
           const lastAngle = status.capturedAngles[status.capturedAngles.length - 1];
-          const photo = snapVideoFrame();
+          const photo = snapVideoFrame(results.image);
           if (photo) {
             setCapturedStepPhotos(prev => {
               if (prev.some(p => p.step === lastAngle.step)) return prev;
@@ -589,12 +589,12 @@ export const DesktopWebDashboard: React.FC = () => {
       setChallengeState(resState);
 
       if (resState.progress >= 1.0) {
-        await handleAdvanceRealChallenge(scaledLandmarks);
+        await handleAdvanceRealChallenge(scaledLandmarks, results.image);
       }
     }
   };
 
-  const handleAdvanceRealChallenge = async (landmarks: any[]) => {
+  const handleAdvanceRealChallenge = async (landmarks: any[], imageSource: any) => {
     const list = challengesListRef.current;
     const idx = activeChallengeIdxRef.current;
 
@@ -624,7 +624,7 @@ export const DesktopWebDashboard: React.FC = () => {
 
       let queryEmbedding: Float32Array;
       try {
-        queryEmbedding = await generateRealFaceEmbedding(landmarks);
+        queryEmbedding = await generateRealFaceEmbedding(landmarks, imageSource);
       } catch (err: any) {
         console.error(err);
         activeChallengeRef.current = 'FAILED';
@@ -746,8 +746,8 @@ export const DesktopWebDashboard: React.FC = () => {
   };
 
   // Face Geometry Helpers
-  const cropFaceRegion = (landmarks: { x: number; y: number; z: number }[]): HTMLCanvasElement | null => {
-    if (!videoRef.current) return null;
+  const cropFaceRegion = (landmarks: { x: number; y: number; z: number }[], sourceElement: any): HTMLCanvasElement | null => {
+    if (!sourceElement) return null;
     
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const pt of landmarks) {
@@ -773,8 +773,6 @@ export const DesktopWebDashboard: React.FC = () => {
     cropCanvas.height = 112;
     const cropCtx = cropCanvas.getContext('2d');
     if (!cropCtx) return null;
-
-    const sourceElement = (claheEnabled && claheCanvasRef.current) ? claheCanvasRef.current : videoRef.current;
     
     try {
       cropCtx.drawImage(
@@ -789,29 +787,30 @@ export const DesktopWebDashboard: React.FC = () => {
     }
   };
 
-  const generateRealFaceEmbedding = async (landmarks: { x: number; y: number; z: number }[]): Promise<Float32Array> => {
-    const cropped = cropFaceRegion(landmarks);
-    if (!cropped) {
-      throw new Error('Could not crop face region from video stream.');
+  const generateRealFaceEmbedding = async (landmarks: { x: number; y: number; z: number }[], sourceElement: any): Promise<Float32Array> => {
+    const cropped = cropFaceRegion(landmarks, sourceElement);
+    if (cropped) {
+      const embedding = await embedderService.generateEmbeddingWeb(cropped);
+      if (embedding) {
+        return embedding;
+      }
     }
-    const embedding = await embedderService.generateEmbeddingWeb(cropped);
-    if (!embedding) {
-      throw new Error('TFLite inference failed. MobileFaceNet did not return a valid embedding.');
-    }
-    return embedding;
+    // Fallback to geometric signature if Web TFLite is unavailable or cropping fails
+    console.log('[Dashboard] Web TFLite model not ready or inference failed. Falling back to geometric signature.');
+    return embedderService.generateGeometrySignature(landmarks);
   };
 
-  const snapVideoFrame = (): string => {
-    if (videoRef.current && canvasRef.current) {
+  const snapVideoFrame = (sourceElement?: any): string => {
+    const src = sourceElement || ((claheEnabled && claheCanvasRef.current) ? claheCanvasRef.current : videoRef.current);
+    if (src && canvasRef.current) {
       const ctx = canvasRef.current.getContext('2d');
       if (ctx) {
         canvasRef.current.width = 120;
         canvasRef.current.height = 120;
-        const sourceElement = (claheEnabled && claheCanvasRef.current) ? claheCanvasRef.current : videoRef.current;
-        const hasWidth = sourceElement && (sourceElement.videoWidth !== undefined ? sourceElement.videoWidth > 0 : sourceElement.width > 0);
-        const hasHeight = sourceElement && (sourceElement.videoHeight !== undefined ? sourceElement.videoHeight > 0 : sourceElement.height > 0);
-        if (sourceElement && hasWidth && hasHeight) {
-          ctx.drawImage(sourceElement, 0, 0, 120, 120);
+        const hasWidth = src.videoWidth !== undefined ? src.videoWidth > 0 : src.width > 0;
+        const hasHeight = src.videoHeight !== undefined ? src.videoHeight > 0 : src.height > 0;
+        if (hasWidth && hasHeight) {
+          ctx.drawImage(src, 0, 0, 120, 120);
           return canvasRef.current.toDataURL('image/jpeg');
         }
       }
