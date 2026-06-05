@@ -1,0 +1,39 @@
+# Source & dev files
+src/
+__tests__/
+tests/
+examples/
+scripts/
+
+# Config files
+.eslintrc*
+.prettierrc*
+babel.config.js
+jest.config.js
+jest.setup.js
+metro.config.js
+vite.config.ts
+tsconfig.json
+tsconfig.build.json
+
+# Native app
+android/
+ios/
+
+# Static assets (too large — users provide their own models)
+public/
+
+# App entry points
+index.html
+index.js
+App.tsx
+
+# Planning docs
+plan.md
+ML_CONTEXT.md
+road.png
+
+# Dev artifacts
+node_modules/
+*.tgz
+.DS_Store

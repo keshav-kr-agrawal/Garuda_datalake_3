@@ -1,16 +1,47 @@
 {
-  "name": "com.nhai.datalake",
-  "version": "0.0.1",
-  "private": true,
+  "name": "nhai-garuda",
+  "version": "1.0.0",
+  "description": "Offline-first biometric face recognition, liveness detection, and cryptographic attendance SDK for NHAI Datalake 3.0",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js",
+      "types": "./dist/types/index.d.ts"
+    }
+  },
+  "files": [
+    "dist/",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">= 18.0.0"
+  },
   "scripts": {
+    "build": "npm run build:esm && npm run build:cjs && npm run build:types",
+    "build:esm": "tsc -p tsconfig.build.json --module esnext --outDir dist/esm",
+    "build:cjs": "tsc -p tsconfig.build.json --module commonjs --outDir dist/cjs",
+    "build:types": "tsc -p tsconfig.build.json --declaration --emitDeclarationOnly --outDir dist/types",
+    "test": "jest",
+    "lint": "eslint src/",
+    "prepublishOnly": "npm run build",
+    "example:web": "vite",
     "android": "react-native run-android",
     "ios": "react-native run-ios",
-    "lint": "eslint .",
-    "start": "react-native start",
-    "test": "jest",
-    "build": "vite build",
-    "ml:check": "node scripts/ml-footprint-check.js",
-    "web": "vite"
+    "start": "react-native start"
+  },
+  "peerDependencies": {
+    "sql.js": "^1.14.0"
+  },
+  "peerDependenciesMeta": {
+    "sql.js": {
+      "optional": true
+    }
   },
   "dependencies": {
     "@mediapipe/face_mesh": "^0.4.1633559619",
@@ -48,13 +79,10 @@
     "@types/sql.js": "^1.4.11",
     "@vitejs/plugin-react": "^6.0.2",
     "eslint": "^8.19.0",
-    "jest": "^29.6.3",
     "prettier": "2.8.8",
     "react-test-renderer": "19.2.3",
+    "ts-jest": "^29.1.0",
     "typescript": "^5.8.3",
     "vite": "^8.0.16"
-  },
-  "engines": {
-    "node": ">= 22.11.0"
   }
 }
