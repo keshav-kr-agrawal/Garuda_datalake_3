@@ -6,7 +6,7 @@ import { SyncManagerService } from '../services/syncManager';
 import { LocalDatabaseService, EnrolledUser, AuditLog } from '../services/databaseSchema';
 import { EnrollmentOrchestratorService, OrchestratorState } from '../services/enrollmentOrchestrator';
 import { CLAHEProcessor } from '../services/claheProcessor';
-import { DatalakeApiService } from '../services/datalakeApiService';
+import { DatalakeApiService, OfflineQueueEntry } from '../services/datalakeApiService';
 import { AWSSyncService } from '../services/awsSyncService';
 
 export const DesktopWebDashboard: React.FC = () => {
@@ -32,7 +32,10 @@ export const DesktopWebDashboard: React.FC = () => {
   const [loginPassword, setLoginPassword] = useState('Nhai@2026');
 
   // Navigation tabs
-  const [activeTab, setActiveTab] = useState<'terminal' | 'registry' | 'ledger' | 'sync'>('terminal');
+  const [activeTab, setActiveTab] = useState<'terminal' | 'registry' | 'ledger' | 'sync' | 'attendance'>('terminal');
+
+  // Attendance queue (the real store — separate from the cryptographic ledger)
+  const [attendanceQueue, setAttendanceQueue] = useState<OfflineQueueEntry[]>([]);
 
   // Terminal Webcam & Canvas Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -122,6 +125,7 @@ export const DesktopWebDashboard: React.FC = () => {
       }
       await refreshUsers();
       await refreshLogs();
+      refreshAttendance();
       updateQueueStats();
     };
     bootstrap();
@@ -143,9 +147,17 @@ export const DesktopWebDashboard: React.FC = () => {
     setLogsList([...list].reverse());
   };
 
+  const refreshAttendance = () => {
+    // Read from the REAL attendance queue (datalakeApiService.offlineQueue)
+    // NOT the cryptographic ledger — these are two separate stores.
+    const queue = datalakeSyncService.getOfflineQueue();
+    setAttendanceQueue(queue);
+  };
+
   const updateQueueStats = () => {
     const stats = datalakeSyncService.getOfflineQueueStats();
     setPendingCount(stats.pending);
+    refreshAttendance(); // keep attendance table in sync
   };
 
   // Simulating random noise on camera metrics to make HUD feel alive
@@ -546,7 +558,7 @@ export const DesktopWebDashboard: React.FC = () => {
           livenessScore: 1.0
         });
 
-        updateQueueStats();
+        updateQueueStats();      // also calls refreshAttendance()
         await refreshLogs();
         stopWebcam();
 
@@ -858,7 +870,7 @@ export const DesktopWebDashboard: React.FC = () => {
     setSyncStatusMsg('Encrypting queue batches with HMAC-SHA256 device keys...');
     const result = await datalakeSyncService.syncOfflineQueue();
     setSyncStatusMsg(result.message);
-    updateQueueStats();
+    updateQueueStats();    // also calls refreshAttendance()
     await refreshLogs();
   };
 
@@ -1411,6 +1423,82 @@ export const DesktopWebDashboard: React.FC = () => {
             </div>
           </div>
         );
+
+      case 'attendance':
+        const todayStr = new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+        const pendingToday  = attendanceQueue.filter(e => e.syncStatus === 'PENDING').length;
+        const syncedToday   = attendanceQueue.filter(e => e.syncStatus === 'SYNCED').length;
+        const rejectedToday = attendanceQueue.filter(e => e.syncStatus === 'REJECTED').length;
+        return (
+          <div className="card" style={{ width: '100%' }}>
+            <div className="card-header">
+              <div>
+                <h3>✅ Attendance Log</h3>
+                <p style={{ fontSize: '12px', color: 'var(--text-gray)', marginTop: '2px' }}>{todayStr}</p>
+              </div>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <span className="status-badge pending">{pendingToday} Pending</span>
+                <span className="status-badge synced">{syncedToday} Synced</span>
+                {rejectedToday > 0 && <span className="status-badge rejected">{rejectedToday} Rejected</span>}
+                <button onClick={refreshAttendance} className="btn-sim" style={{ padding: '4px 10px', fontSize: '11px' }}>Refresh</button>
+              </div>
+            </div>
+
+            <div style={{ overflowX: 'auto', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+              <table className="roster-table" style={{ minWidth: '600px' }}>
+                <thead>
+                  <tr>
+                    <th>Record ID</th>
+                    <th>Time</th>
+                    <th>Employee ID</th>
+                    <th>Name</th>
+                    <th>Confidence</th>
+                    <th>GPS</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {attendanceQueue.length > 0 ? attendanceQueue.map(entry => {
+                    const person = usersList.find(u => u.id === entry.employeeId);
+                    return (
+                      <tr key={entry.localId}>
+                        <td><code style={{ fontSize: '10px', color: 'var(--text-gray)' }}>{entry.localId.slice(0, 18)}…</code></td>
+                        <td style={{ whiteSpace: 'nowrap' }}>{new Date(entry.enqueuedAt).toLocaleTimeString('en-IN')}</td>
+                        <td><strong>{entry.employeeId}</strong></td>
+                        <td>{person?.name ?? '—'}</td>
+                        <td>{entry.matchConfidence ? `${(entry.matchConfidence * 100).toFixed(1)}%` : '—'}</td>
+                        <td style={{ fontSize: '11px', color: 'var(--text-gray)' }}>
+                          {entry.gpsLatitude?.toFixed(4)}, {entry.gpsLongitude?.toFixed(4)}
+                        </td>
+                        <td>
+                          <span className={`status-badge ${entry.syncStatus.toLowerCase()}`}>
+                            {entry.syncStatus}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  }) : (
+                    <tr>
+                      <td colSpan={7}>
+                        <div className="empty-state">
+                          <span className="empty-state-icon">📋</span>
+                          <p className="empty-state-msg">No attendance records yet.</p>
+                          <p className="empty-state-sub">Go to the Verification Terminal tab, activate the camera, and complete a face scan to mark attendance.</p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ padding: '12px 0', fontSize: '11px', color: 'var(--text-gray)', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+              <span>🟡 PENDING — queued offline, will sync when internet restores</span>
+              <span>🟢 SYNCED — uploaded to NHAI server, local copy purged</span>
+              <span>🔴 REJECTED — server refused (duplicate or integrity fail)</span>
+            </div>
+          </div>
+        );
     }
   };
 
@@ -1427,18 +1515,34 @@ export const DesktopWebDashboard: React.FC = () => {
           --border-color: #D2DFEF;
           --text-slate: #0F172A;
           --text-gray: #475569;
+          --success: #065F46;
+          --success-bg: #D1FAE5;
+          --warn: #92400E;
+          --warn-bg: #FEF3C7;
+          --danger: #991B1B;
+          --danger-bg: #FEE2E2;
+        }
+
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
+
+        *, *::before, *::after {
+          box-sizing: border-box;
         }
 
         body {
           background-color: var(--ice-bg);
           color: var(--text-slate);
-          font-family: 'Outfit', sans-serif;
+          font-family: 'Inter', system-ui, sans-serif;
           min-height: 100vh;
+          margin: 0;
+          -webkit-font-smoothing: antialiased;
         }
 
         /* ─── Portal Header ─── */
         .portal-header {
-          background-color: var(--white);
+          background: rgba(255,255,255,0.95);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
           border-bottom: 1px solid var(--border-color);
           padding: 12px 40px;
           display: flex;
@@ -1494,8 +1598,8 @@ export const DesktopWebDashboard: React.FC = () => {
         .login-view {
           min-height: calc(100vh - 65px);
           display: flex;
-          background: linear-gradient(rgba(11, 60, 115, 0.4), rgba(7, 44, 84, 0.7)), 
-                      url('https://images.unsplash.com/photo-1594913785162-e6785b423cb1?auto=format&fit=crop&w=1600&q=80') center center / cover no-repeat;
+          background: linear-gradient(rgba(7, 44, 84, 0.72), rgba(4, 30, 60, 0.82)),
+                      url('/road.png') center center / cover no-repeat;
           padding: 40px;
           align-items: center;
           justify-content: space-around;
@@ -1532,10 +1636,13 @@ export const DesktopWebDashboard: React.FC = () => {
           width: 440px;
         }
         .login-card {
-          background-color: var(--white);
+          background: rgba(255, 255, 255, 0.98);
+          backdrop-filter: blur(20px);
+          -webkit-backdrop-filter: blur(20px);
           border-radius: 20px;
           padding: 36px;
-          box-shadow: 0 20px 40px rgba(7, 44, 84, 0.15);
+          box-shadow: 0 24px 48px rgba(7, 44, 84, 0.22), 0 0 0 1px rgba(255,255,255,0.6);
+          border: 1px solid rgba(255,255,255,0.9);
         }
         .login-card-header {
           display: flex;
@@ -1579,12 +1686,14 @@ export const DesktopWebDashboard: React.FC = () => {
           color: var(--text-slate);
           outline: none;
         }
-        .input-group input:focus {
+        .input-group input:focus, .input-group select:focus {
           border-color: var(--navy-primary);
+          box-shadow: 0 0 0 3px rgba(11, 60, 115, 0.12);
+          outline: none;
         }
         .btn-login-submit {
           width: 100%;
-          background-color: var(--navy-primary);
+          background: linear-gradient(135deg, var(--navy-primary) 0%, var(--navy-light) 100%);
           color: var(--white);
           border: none;
           padding: 14px;
@@ -1592,11 +1701,17 @@ export const DesktopWebDashboard: React.FC = () => {
           font-size: 14px;
           font-weight: 600;
           cursor: pointer;
-          transition: background-color 0.2s;
+          transition: all 0.2s;
           margin-top: 8px;
+          letter-spacing: 0.3px;
         }
         .btn-login-submit:hover {
-          background-color: var(--navy-dark);
+          background: linear-gradient(135deg, var(--navy-dark) 0%, var(--navy-primary) 100%);
+          box-shadow: 0 6px 20px rgba(11, 60, 115, 0.35);
+          transform: translateY(-1px);
+        }
+        .btn-login-submit:active {
+          transform: translateY(0);
         }
         .login-actions-row {
           display: flex;
@@ -1832,30 +1947,38 @@ export const DesktopWebDashboard: React.FC = () => {
         }
         .app-tabs {
           display: flex;
-          gap: 10px;
+          gap: 8px;
           margin-bottom: 20px;
+          flex-wrap: wrap;
         }
         .tab-btn {
           background-color: var(--white);
           border: 1px solid var(--border-color);
           color: var(--text-gray);
-          padding: 10px 20px;
+          padding: 10px 18px;
           border-radius: 8px;
           font-size: 13px;
           font-weight: 600;
           cursor: pointer;
-          transition: all 0.2s;
+          transition: all 0.18s ease;
+          white-space: nowrap;
         }
         .tab-btn:hover, .tab-btn.active {
           background-color: var(--navy-primary);
           color: var(--white);
           border-color: var(--navy-primary);
+          box-shadow: 0 4px 12px rgba(11, 60, 115, 0.25);
         }
 
         /* ─── Tab Components UI ─── */
         .tab-viewport {
           flex: 1;
           display: flex;
+          animation: tabFadeIn 0.18s ease;
+        }
+        @keyframes tabFadeIn {
+          from { opacity: 0; transform: translateY(4px); }
+          to   { opacity: 1; transform: translateY(0);   }
         }
         .dashboard-grid {
           display: flex;
@@ -1870,6 +1993,7 @@ export const DesktopWebDashboard: React.FC = () => {
           display: flex;
           flex-direction: column;
           gap: 16px;
+          min-width: 0;    /* prevent flex overflow */
         }
         .terminal-card {
           flex: 1.2;
@@ -2366,6 +2490,41 @@ export const DesktopWebDashboard: React.FC = () => {
           padding: 20px;
         }
 
+        /* ─── Status Badges for Attendance Table ─── */
+        .status-badge {
+          display: inline-block;
+          padding: 3px 8px;
+          border-radius: 20px;
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.5px;
+          text-transform: uppercase;
+          white-space: nowrap;
+        }
+        .status-badge.pending  { background: var(--warn-bg);    color: var(--warn);    }
+        .status-badge.synced   { background: var(--success-bg); color: var(--success); }
+        .status-badge.rejected { background: var(--danger-bg);  color: var(--danger);  }
+        .status-badge.online   { background: #E6F4EA; color: #137333; }
+        .status-badge.offline  { background: #FCE8E6; color: #C5221F; }
+
+        /* ─── Empty States ─── */
+        .empty-state {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          padding: 40px 20px;
+          gap: 8px;
+        }
+        .empty-state-icon { font-size: 36px; }
+        .empty-state-msg  { font-size: 14px; font-weight: 600; color: var(--navy-dark); margin: 0; }
+        .empty-state-sub  { font-size: 12px; color: var(--text-gray); text-align: center; max-width: 360px; margin: 0; }
+
+        /* ─── Code / Monospace ─── */
+        code {
+          font-family: 'JetBrains Mono', 'Fira Code', monospace;
+          font-size: 11px;
+        }
+
         /* ─── Cloud Sync UI ─── */
         .gateway-list {
           display: flex;
@@ -2439,7 +2598,7 @@ export const DesktopWebDashboard: React.FC = () => {
           }
           .login-right {
             width: 100%;
-            max-width: 440px;
+            max-width: 460px;
           }
         }
 
@@ -2458,12 +2617,12 @@ export const DesktopWebDashboard: React.FC = () => {
           .header-right {
             flex-wrap: wrap;
             justify-content: center;
-            gap: 12px 16px;
+            gap: 10px 14px;
           }
           .app-header-telemetry {
-            flex-direction: column;
-            gap: 10px;
-            width: 100%;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 8px;
           }
           .telemetry-item {
             border-right: none;
@@ -2478,16 +2637,16 @@ export const DesktopWebDashboard: React.FC = () => {
           }
           .app-tabs {
             flex-wrap: wrap;
-            justify-content: center;
+            justify-content: flex-start;
           }
           .tab-btn {
             flex: 1 1 auto;
             text-align: center;
-            font-size: 12px;
-            padding: 8px 14px;
+            font-size: 11px;
+            padding: 8px 12px;
           }
           .app-body {
-            padding: 16px 20px;
+            padding: 16px 16px;
           }
           .card {
             padding: 16px;
@@ -2499,17 +2658,48 @@ export const DesktopWebDashboard: React.FC = () => {
             width: 280px;
             height: 280px;
           }
+          /* Registry table — scroll on mobile */
+          .roster-container {
+            overflow-x: auto;
+          }
+          .roster-table {
+            min-width: 480px;
+          }
+          /* Queue list table */
+          .queue-list-container {
+            overflow-x: auto;
+          }
+          .login-view {
+            padding: 24px 16px;
+          }
+        }
+
+        /* Phone landscape / small tablet */
+        @media (max-width: 667px) {
+          .welcome-title {
+            font-size: 30px;
+          }
+          .welcome-sub {
+            font-size: 16px;
+          }
+          .override-buttons {
+            grid-template-columns: 1fr 1fr;
+          }
+          .ledger-block-node {
+            width: 160px;
+          }
         }
 
         @media (max-width: 480px) {
           .login-view {
-            padding: 20px 16px;
+            padding: 16px 12px;
           }
           .login-card {
             padding: 24px 16px;
+            border-radius: 16px;
           }
           .welcome-title {
-            font-size: 28px;
+            font-size: 26px;
           }
           .stats-row {
             grid-template-columns: 1fr 1fr;
@@ -2524,6 +2714,46 @@ export const DesktopWebDashboard: React.FC = () => {
           }
           .override-buttons {
             grid-template-columns: 1fr;
+          }
+          .login-right {
+            width: 100%;
+            max-width: 100%;
+          }
+          .camera-viewport {
+            height: 240px;
+          }
+          .video-relative {
+            width: 240px;
+            height: 240px;
+          }
+          .app-body {
+            padding: 12px;
+          }
+          .card {
+            padding: 12px;
+          }
+          .app-tabs {
+            gap: 6px;
+          }
+          .tab-btn {
+            font-size: 10px;
+            padding: 7px 10px;
+          }
+        }
+
+        /* Very small phones (iPhone SE, Galaxy A series) */
+        @media (max-width: 390px) {
+          .welcome-title {
+            font-size: 22px;
+          }
+          .login-card {
+            padding: 20px 12px;
+          }
+          .app-header {
+            padding: 10px 12px;
+          }
+          .brand-main {
+            font-size: 14px;
           }
         }
       ` }} />
@@ -2762,25 +2992,31 @@ export const DesktopWebDashboard: React.FC = () => {
                     className={`tab-btn ${activeTab === 'terminal' ? 'active' : ''}`}
                     onClick={() => setActiveTab('terminal')}
                   >
-                    👁️ Verification Terminal
+                    👁️ Verification
+                  </button>
+                  <button 
+                    className={`tab-btn ${activeTab === 'attendance' ? 'active' : ''}`}
+                    onClick={() => { setActiveTab('attendance'); refreshAttendance(); }}
+                  >
+                    ✅ Attendance
                   </button>
                   <button 
                     className={`tab-btn ${activeTab === 'registry' ? 'active' : ''}`}
                     onClick={() => setActiveTab('registry')}
                   >
-                    👥 Personnel Registry
+                    👥 Personnel
                   </button>
                   <button 
                     className={`tab-btn ${activeTab === 'ledger' ? 'active' : ''}`}
                     onClick={() => setActiveTab('ledger')}
                   >
-                    🔗 Security Ledger
+                    🔗 Ledger
                   </button>
                   <button 
                     className={`tab-btn ${activeTab === 'sync' ? 'active' : ''}`}
                     onClick={() => setActiveTab('sync')}
                   >
-                    📡 Cloud Sync Hub
+                    📡 Cloud Sync
                   </button>
                 </nav>
                 

@@ -67,10 +67,13 @@
  */
 
 import NetInfo from '@react-native-community/netinfo';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { LocalDbAdapter } from './localDbAdapter';
 import { CryptographicLedgerService } from './cryptographicLedger';
 import { LocalDatabaseService } from './databaseSchema';
 import { AWSSyncService } from './awsSyncService'; // AWS sync — mandatory per problem statement
+
+// Unified local storage for session + queue (works on both web IndexedDB and mobile AsyncStorage)
+const storage = LocalDbAdapter.getInstance();
 
 // ─── NIC API Configuration ────────────────────────────────────────────────────
 // These mirror the real Datalake 3.0 backend endpoints on NIC infrastructure.
@@ -374,46 +377,14 @@ export class DatalakeApiService {
       faceImageBase64:    params.faceImageBase64,
       livenessScore:      params.livenessScore,
       matchConfidence:    params.matchConfidence,
-      isOfflineRecord:    false,           // will be set to true if offline
+      isOfflineRecord:    true,    // always queued locally first (offline-first architecture)
       deviceId:           this.deviceId,
       appVersion:         NIC_API_CONFIG.APP_VERSION,
     };
 
-    // Try online submission first
-    try {
-      const networkState = await NetInfo.fetch();
-      if (networkState.isConnected && networkState.isInternetReachable !== false) {
-        const response = await this._authenticatedPost<AttendanceMarkResponse>(
-          NIC_API_CONFIG.ENDPOINTS.ATTENDANCE_MARK,
-          record
-        );
-        if (response?.success) {
-          // Write to local SHA-256 audit ledger for tamper-evident logging
-          await this.ledger.recordTransaction(
-            params.employeeId,
-            params.gpsLatitude,
-            params.gpsLongitude,
-            params.matchConfidence,
-            response.status === 'VERIFIED' ? 'VERIFIED' : 'FAILED'
-          );
-
-          return {
-            success: true,
-            attendanceId: response.attendanceId,
-            isOfflineRecord: false,
-            status: response.status,
-            message: response.message,
-          };
-        }
-      }
-    } catch (e) {
-      console.warn('[DatalakeAPI] Online attendance mark failed. Queuing offline...');
-    }
-
-    // OFFLINE PATH: Queue the record with cryptographic proof
-    // This is the core innovation of our hackathon module.
-    // The SHA-256 block ensures each offline record is tamper-evident
-    // and can be cryptographically verified by the AWS server on sync.
+    // OFFLINE-FIRST: Always write to local queue + cryptographic ledger immediately.
+    // This guarantees the record appears in the UI regardless of network state.
+    // If online, the NetInfo auto-sync listener will upload the queue in the background.
     const block = await this.ledger.recordTransaction(
       params.employeeId,
       params.gpsLatitude,
@@ -436,18 +407,48 @@ export class DatalakeApiService {
     this.offlineQueue.push(offlineEntry);
     await this._persistOfflineQueue();
 
-    console.log(`[DatalakeAPI] Attendance queued offline. Queue length: ${this.offlineQueue.length}`);
+    console.log(`[DatalakeAPI] Attendance recorded offline-first. Queue length: ${this.offlineQueue.length}`);
+
+    // If online, try to sync this record to NIC server immediately in the background
+    // without blocking the UI. On success, mark as SYNCED and persist.
+    this._trySyncEntryInBackground(offlineEntry);
 
     return {
       success: true,
       attendanceId: offlineEntry.localId,
       isOfflineRecord: true,
       status: 'QUEUED_OFFLINE',
-      message: `Attendance recorded offline. Will sync to NHAI Datalake when internet is available. Proof: ${offlineEntry.localId}`,
+      message: `Attendance recorded. Proof: ${offlineEntry.localId}`,
     };
   }
 
+  /**
+   * Attempts to sync a single queue entry to the NIC server in the background.
+   * Does not block the UI. Marks as SYNCED if server confirms.
+   */
+  private async _trySyncEntryInBackground(entry: OfflineQueueEntry): Promise<void> {
+    try {
+      const networkState = await NetInfo.fetch();
+      if (!networkState.isConnected || networkState.isInternetReachable === false) return;
+      if (!this.session?.token) return;
+
+      const response = await this._authenticatedPost<AttendanceMarkResponse>(
+        NIC_API_CONFIG.ENDPOINTS.ATTENDANCE_MARK,
+        { ...entry, isOfflineRecord: true }
+      );
+
+      if (response?.success) {
+        entry.syncStatus = 'SYNCED';
+        await this._persistOfflineQueue();
+        console.log(`[DatalakeAPI] Entry ${entry.localId} synced to NIC server.`);
+      }
+    } catch {
+      // Silent — will be retried on next full sync
+    }
+  }
+
   // ─── Offline Queue Sync ───────────────────────────────────────────────────
+
 
   /**
    * Syncs all pending offline attendance records to the NIC Datalake 3.0 server.
@@ -526,12 +527,12 @@ export class DatalakeApiService {
       return { success: false, syncedCount: 0, rejectedCount: 0, remainingCount: pending.length, message: 'Network error during sync.' };
     }
 
-    // Purge synced records older than 48h (mandatory per problem statement)
-    const cutoff = Date.now() - 48 * 60 * 60 * 1000;
-    this.offlineQueue = this.offlineQueue.filter(
-      e => !(e.syncStatus === 'SYNCED' && e.enqueuedAt < cutoff)
-    );
+    // Purge: remove ALL successfully synced records from local storage
+    // (mandatory per problem statement: "local data to be purged")
+    // We keep REJECTED records for retry and PENDING records not yet synced.
+    this.offlineQueue = this.offlineQueue.filter(e => e.syncStatus !== 'SYNCED');
     await this._persistOfflineQueue();
+    console.log(`[DatalakeAPI] Local queue purged. Removed all SYNCED records. Remaining: ${this.offlineQueue.length}.`);
 
     // Also trigger AWS sync (mandatory deliverable per hackathon problem statement:
     // "sync with AWS server after network connectivity is restored")
@@ -583,6 +584,15 @@ export class DatalakeApiService {
       time: todayRecord?.timestamp,
       isOfflineRecord: true,
     };
+  }
+
+  /**
+   * Returns the full offline attendance queue.
+   * Used by the dashboard to display real-time attendance records.
+   * Sorted newest-first for display purposes.
+   */
+  public getOfflineQueue(): OfflineQueueEntry[] {
+    return [...this.offlineQueue].sort((a, b) => b.enqueuedAt - a.enqueuedAt);
   }
 
   // ─── Roster Download (Pre-populate offline face DB) ───────────────────────
@@ -768,13 +778,12 @@ export class DatalakeApiService {
 
   private async _persistSession(): Promise<void> {
     if (!this.session) return;
-    // Simple JSON storage — in production use EncryptedStorage
-    await AsyncStorage.setItem(STORAGE.SESSION, JSON.stringify(this.session));
+    await storage.setItem(STORAGE.SESSION, JSON.stringify(this.session));
   }
 
   private async _restoreSession(): Promise<void> {
     try {
-      const raw = await AsyncStorage.getItem(STORAGE.SESSION);
+      const raw = await storage.getItem(STORAGE.SESSION);
       if (!raw) return;
       const parsed: TokenSession = JSON.parse(raw);
       if (parsed.expiresAt > Date.now()) {
@@ -782,7 +791,7 @@ export class DatalakeApiService {
         console.log(`[DatalakeAPI] Session restored for: ${this.session.employeeProfile.employeeId}`);
       } else {
         console.log('[DatalakeAPI] Cached session expired. User must re-login when online.');
-        await AsyncStorage.removeItem(STORAGE.SESSION);
+        await storage.removeItem(STORAGE.SESSION);
       }
     } catch (e) {
       console.warn('[DatalakeAPI] Could not restore session:', e);
@@ -790,13 +799,14 @@ export class DatalakeApiService {
   }
 
   private async _persistOfflineQueue(): Promise<void> {
-    await AsyncStorage.setItem(STORAGE.OFFLINE_Q, JSON.stringify(this.offlineQueue));
+    await storage.setItem(STORAGE.OFFLINE_Q, JSON.stringify(this.offlineQueue));
   }
 
   private async _loadOfflineQueue(): Promise<void> {
     try {
-      const raw = await AsyncStorage.getItem(STORAGE.OFFLINE_Q);
+      const raw = await storage.getItem(STORAGE.OFFLINE_Q);
       this.offlineQueue = raw ? JSON.parse(raw) : [];
+      console.log(`[DatalakeAPI] Loaded ${this.offlineQueue.length} records from local offline queue.`);
     } catch {
       this.offlineQueue = [];
     }
@@ -804,10 +814,10 @@ export class DatalakeApiService {
 
   private async _getOrCreateDeviceId(): Promise<string> {
     try {
-      const stored = await AsyncStorage.getItem(STORAGE.DEVICE_ID);
+      const stored = await storage.getItem(STORAGE.DEVICE_ID);
       if (stored) return stored;
       const id = `DL3-${this.ledger.sha256(Date.now().toString() + Math.random().toString()).substring(0, 16).toUpperCase()}`;
-      await AsyncStorage.setItem(STORAGE.DEVICE_ID, id);
+      await storage.setItem(STORAGE.DEVICE_ID, id);
       return id;
     } catch {
       return `DL3-FALLBACK-${Date.now()}`;

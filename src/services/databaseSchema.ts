@@ -1,5 +1,7 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { LocalDbAdapter } from './localDbAdapter';
 import { AngleEmbedding, FaceEmbedderService } from './faceEmbedder';
+
+const storage = LocalDbAdapter.getInstance();
 
 export interface EnrolledUser {
   id: string;
@@ -56,7 +58,7 @@ export class LocalDatabaseService {
   public async getEnrolledUsers(): Promise<EnrolledUser[]> {
     if (this.usersCache) return this.usersCache;
     try {
-      const data = await AsyncStorage.getItem(USERS_KEY);
+      const data = await storage.getItem(USERS_KEY);
       this.usersCache = data ? JSON.parse(data) : [];
       return this.usersCache!;
     } catch (e) {
@@ -74,7 +76,7 @@ export class LocalDatabaseService {
       // Remove duplicates if any
       const updated = users.filter(u => u.id !== user.id);
       updated.push(user);
-      await AsyncStorage.setItem(USERS_KEY, JSON.stringify(updated));
+      await storage.setItem(USERS_KEY, JSON.stringify(updated));
       this.usersCache = updated; // Update cache!
       console.log(`[LocalDatabase] Successfully enrolled user: ${user.name} (${user.id})`);
       return true;
@@ -91,7 +93,7 @@ export class LocalDatabaseService {
     try {
       const users = await this.getEnrolledUsers();
       const updated = users.filter(u => u.id !== userId);
-      await AsyncStorage.setItem(USERS_KEY, JSON.stringify(updated));
+      await storage.setItem(USERS_KEY, JSON.stringify(updated));
       this.usersCache = updated;
       console.log(`[LocalDatabase] Successfully deleted user: ${userId}`);
       return true;
@@ -236,7 +238,7 @@ export class LocalDatabaseService {
       bulkUsers.push({ id, name, role, embedding });
     }
 
-    await AsyncStorage.setItem(USERS_KEY, JSON.stringify(bulkUsers));
+    await storage.setItem(USERS_KEY, JSON.stringify(bulkUsers));
     this.usersCache = bulkUsers;
     console.log('[LocalDatabase] Successfully seeded and cached 10,000 personnel profiles!');
   }
@@ -282,7 +284,7 @@ export class LocalDatabaseService {
    */
   public async getLedger(): Promise<AuditLog[]> {
     try {
-      const data = await AsyncStorage.getItem(LEDGER_KEY);
+      const data = await storage.getItem(LEDGER_KEY);
       return data ? JSON.parse(data) : [];
     } catch (e) {
       console.error('[LocalDatabase] Error getting ledger:', e);
@@ -297,7 +299,7 @@ export class LocalDatabaseService {
     try {
       const ledger = await this.getLedger();
       ledger.push(block);
-      await AsyncStorage.setItem(LEDGER_KEY, JSON.stringify(ledger));
+      await storage.setItem(LEDGER_KEY, JSON.stringify(ledger));
       return true;
     } catch (e) {
       console.error('[LocalDatabase] Error appending ledger block:', e);
@@ -310,7 +312,7 @@ export class LocalDatabaseService {
    */
   public async saveLedger(ledger: AuditLog[]): Promise<boolean> {
     try {
-      await AsyncStorage.setItem(LEDGER_KEY, JSON.stringify(ledger));
+      await storage.setItem(LEDGER_KEY, JSON.stringify(ledger));
       return true;
     } catch (e) {
       console.error('[LocalDatabase] Error saving ledger:', e);
