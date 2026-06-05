@@ -44,7 +44,7 @@ export const ENROLLMENT_STEPS: EnrollmentStepConfig[] = [
     arrow: 'up',
     requiredFrames: 20,
     poseCheck: (yaw, pitch, _roll) =>
-      pitch > 14 && Math.abs(yaw) < 15,
+      pitch < -12 && Math.abs(yaw) < 15,
   },
   {
     step: 'LOOK_DOWN',
@@ -53,7 +53,7 @@ export const ENROLLMENT_STEPS: EnrollmentStepConfig[] = [
     arrow: 'down',
     requiredFrames: 20,
     poseCheck: (yaw, pitch, _roll) =>
-      pitch < -14 && Math.abs(yaw) < 15,
+      pitch > 12 && Math.abs(yaw) < 15,
   },
   {
     step: 'TURN_LEFT',
@@ -301,6 +301,16 @@ export class LivenessMathService {
   }
 
   /**
+   * Calculate Euclidean Distance between two 2D landmarks (projected image plane)
+   */
+  public distance2D(p1: Landmark3D, p2: Landmark3D): number {
+    return Math.sqrt(
+      (p1.x - p2.x) ** 2 +
+      (p1.y - p2.y) ** 2
+    );
+  }
+
+  /**
    * Eye Aspect Ratio (EAR)
    * Formula: EAR = (||p2 - p6|| + ||p3 - p5||) / (2 * ||p1 - p4||)
    */
@@ -367,19 +377,19 @@ export class LivenessMathService {
     const forehead = landmarks[10];
     const chin = landmarks[152];
 
-    // 1. Yaw (Left / Right turn): Compare eye-to-nose relative lateral distance
-    const distRight = this.distance3D(nose, rightEye);
-    const distLeft = this.distance3D(nose, leftEye);
-    const distEyes = this.distance3D(rightEye, leftEye);
+    // 1. Yaw (Left / Right turn): Compare eye-to-nose relative lateral distance (2D projected)
+    const distRight = this.distance2D(nose, rightEye);
+    const distLeft = this.distance2D(nose, leftEye);
+    const distEyes = this.distance2D(rightEye, leftEye);
     const yaw = distEyes === 0 ? 0 : ((distRight - distLeft) / distEyes) * 90.0; // scale to rough degrees
 
-    // 2. Pitch (Up / Down tilt): Compare forehead-to-nose vs chin-to-nose vertical distance
-    const distForehead = this.distance3D(nose, forehead);
-    const distChin = this.distance3D(nose, chin);
-    const distFaceHeight = this.distance3D(forehead, chin);
+    // 2. Pitch (Up / Down tilt): Compare forehead-to-nose vs chin-to-nose vertical distance (2D projected)
+    const distForehead = this.distance2D(nose, forehead);
+    const distChin = this.distance2D(nose, chin);
+    const distFaceHeight = this.distance2D(forehead, chin);
     const pitch = distFaceHeight === 0 ? 0 : ((distForehead - distChin) / distFaceHeight) * 90.0;
 
-    // 3. Roll (Head tilt): Angle between outer eye corners
+    // 3. Roll (Head tilt): Angle between outer eye corners (2D projected)
     const roll = Math.atan2(leftEye.y - rightEye.y, leftEye.x - rightEye.x) * (180.0 / Math.PI);
 
     return { yaw, pitch, roll };

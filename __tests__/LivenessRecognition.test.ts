@@ -179,13 +179,13 @@ describe('NHAI Offline Facial Recognition & Liveness System Tests', () => {
       expect(users.length).toBe(10000);
 
       // 2. Setup mock target face query vector (identical to Keshav's embedding)
-      const query = new Float32Array(Array.from({ length: 128 }, (_, i) => Math.sin(i) * Math.cos(i * 1.5)));
+      const query = new Float32Array(Array.from({ length: 192 }, (_, i) => Math.sin(i) * Math.cos(i * 1.5)));
       
       // Perform L2-normalization on the query
       let sumSq = 0;
-      for (let i = 0; i < 128; i++) sumSq += query[i] * query[i];
+      for (let i = 0; i < 192; i++) sumSq += query[i] * query[i];
       const mag = Math.sqrt(sumSq);
-      for (let i = 0; i < 128; i++) query[i] = mag === 0 ? 0 : query[i] / mag;
+      for (let i = 0; i < 192; i++) query[i] = mag === 0 ? 0 : query[i] / mag;
 
       // 3. Measure vectorSearch execution latency
       const start = Date.now();

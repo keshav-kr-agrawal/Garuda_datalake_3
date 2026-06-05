@@ -234,19 +234,26 @@ export class DatalakeApiService {
     try {
       const networkState = await NetInfo.fetch();
       if (networkState.isConnected && networkState.isInternetReachable !== false) {
-        const result = await this._nicApiLogin(employeeId, password);
-        if (result.success) {
-          this.session = {
-            token: result.token,
-            expiresAt: result.expiresAt,
-            employeeProfile: result.employeeProfile,
-          };
-          await this._persistSession();
+        try {
+          const result = await this._nicApiLogin(employeeId, password);
+          if (result.success) {
+            this.session = {
+              token: result.token,
+              expiresAt: result.expiresAt,
+              employeeProfile: result.employeeProfile,
+            };
+            await this._persistSession();
 
-          // Download updated face roster from NIC for offline use
-          this._downloadRosterInBackground(result.token, result.employeeProfile.projectCode);
+            // Download updated face roster from NIC for offline use
+            this._downloadRosterInBackground(result.token, result.employeeProfile.projectCode);
 
-          return { success: true, profile: result.employeeProfile, isOfflineSession: false };
+            return { success: true, profile: result.employeeProfile, isOfflineSession: false };
+          }
+        } catch (authErr: any) {
+          if (authErr && authErr.message === 'INVALID_CREDENTIALS') {
+            return { success: false, error: 'Invalid credentials. Check employee ID and password.' };
+          }
+          throw authErr;
         }
         return { success: false, error: 'Invalid credentials. Check employee ID and password.' };
       }
@@ -257,6 +264,33 @@ export class DatalakeApiService {
     // 2. Offline fallback: validate cached session
     if (this.session && this.session.employeeProfile.employeeId === employeeId) {
       console.log('[DatalakeAPI] Authenticated via cached session (offline mode).');
+      return {
+        success: true,
+        profile: this.session.employeeProfile,
+        isOfflineSession: true,
+      };
+    }
+
+    // Check local database roster for offline validation fallback
+    const enrolledUsers = await this.db.getEnrolledUsers();
+    const matchedUser = enrolledUsers.find(u => u.id === employeeId);
+    if (matchedUser) {
+      console.log('[DatalakeAPI] Authenticated offline via local database profile.');
+      const now = Date.now();
+      this.session = {
+        token: `nic-jwt-offline-${this.ledger.sha256(employeeId + now.toString()).substring(0, 32)}`,
+        expiresAt: now + 8 * 60 * 60 * 1000,
+        employeeProfile: {
+          employeeId: matchedUser.id,
+          name: matchedUser.name,
+          role: matchedUser.role,
+          projectCode: 'NH-48-DELHI-JAIPUR',
+          region: 'DELHI-NCR',
+          aadhaarLinked: true,
+          faceEnrolled: true,
+        }
+      };
+      await this._persistSession();
       return {
         success: true,
         profile: this.session.employeeProfile,
@@ -604,6 +638,7 @@ export class DatalakeApiService {
       'NHAI-2026-001': { password: 'Nhai@2026', name: 'Keshav Kumar Agrawal', role: 'Toll Supervisor' },
       'NHAI-2026-002': { password: 'Nhai@2026', name: 'Harshiya Sharma',       role: 'Checkpost Inspector' },
       'NHAI-2026-003': { password: 'Nhai@2026', name: 'Anurag Mohapatra',      role: 'Field Security Lead' },
+      'admin':         { password: 'Admin@2026', name: 'System Administrator', role: 'System Administrator' },
     };
 
     const emp = MOCK_EMPLOYEES[employeeId];

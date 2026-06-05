@@ -69,13 +69,33 @@ export class FaceEmbedderService {
       console.log('[FaceEmbedderService] Initializing Edge AI models...');
       this.warnings = [];
 
+      if (Platform.OS === 'web') {
+        try {
+          const tflite = (window as any).tflite;
+          if (tflite) {
+            tflite.setWasmPath('/tflite-wasm/');
+            this.mobileFaceNetModel = await tflite.loadTFLiteModel('/mobile_facenet.tflite');
+            console.log('[FaceEmbedderService] Web TFLite MobileFaceNet model loaded successfully.');
+          } else {
+            console.warn('[FaceEmbedderService] window.tflite is missing.');
+            this.warnings.push('Web TFLite runtime not found.');
+          }
+        } catch (e: any) {
+          console.error('[FaceEmbedderService] Error loading Web TFLite model:', e);
+          this.warnings.push(`Web model loading failed: ${e.message || String(e)}`);
+          this.mobileFaceNetModel = null;
+        }
+        this.isLoaded = true;
+        return true;
+      }
+
       // In a real device environment, react-native-fast-tflite loads from the asset path
       // On Android: assets/face_mesh.tflite, iOS: bundle files
       const meshPath = Platform.OS === 'android' ? 'face_mesh.tflite' : 'assets/face_mesh.tflite';
       const faceNetPath = Platform.OS === 'android' ? 'mobile_facenet.tflite' : 'assets/mobile_facenet.tflite';
 
       try {
-        this.faceMeshModel = await loadTensorFlowModel(meshPath, {
+        this.faceMeshModel = await loadTensorflowModel(meshPath, {
           delegate: Platform.OS === 'ios' ? 'metal' : 'nnapi',
         });
         console.log('[FaceEmbedderService] MediaPipe Face Mesh model loaded successfully.');
@@ -87,7 +107,7 @@ export class FaceEmbedderService {
       }
 
       try {
-        this.mobileFaceNetModel = await loadTensorFlowModel(faceNetPath, {
+        this.mobileFaceNetModel = await loadTensorflowModel(faceNetPath, {
           delegate: Platform.OS === 'ios' ? 'metal' : 'nnapi',
         });
         console.log('[FaceEmbedderService] MobileFaceNet model loaded successfully.');
@@ -311,16 +331,54 @@ export class FaceEmbedderService {
    *   1. Weighted sum across all angle embeddings
    *   2. L2-normalize the result so it stays unit magnitude
    */
+  /**
+   * Generates a 128/192-dimensional embedding vector for an aligned face canvas in the browser.
+   */
+  public async generateEmbeddingWeb(canvas: HTMLCanvasElement): Promise<Float32Array | null> {
+    if (!this.mobileFaceNetModel || Platform.OS !== 'web') {
+      return null;
+    }
+    try {
+      const tf = (window as any).tf;
+      if (!tf) throw new Error('tf.js not loaded');
+      const size = 112; // MobileFaceNet standard input size
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return null;
+      
+      const imgD = ctx.getImageData(0, 0, size, size);
+      const raw = new Float32Array(size * size * 3);
+      for (let i = 0, j = 0; i < imgD.data.length; i += 4, j += 3) {
+        const r = imgD.data[i], g = imgD.data[i+1], b = imgD.data[i+2];
+        // Normalize to [-1.0, 1.0]
+        raw[j] = (r / 127.5) - 1;
+        raw[j+1] = (g / 127.5) - 1;
+        raw[j+2] = (b / 127.5) - 1;
+      }
+      
+      const inp = tf.tensor4d(raw, [1, size, size, 3]);
+      const out = this.mobileFaceNetModel.predict(inp);
+      const res = new Float32Array(await out.data());
+      inp.dispose();
+      out.dispose();
+      return this.l2Normalize(res);
+    } catch (err) {
+      console.error('[FaceEmbedderService] Web TFLite inference error:', err);
+      return null;
+    }
+  }
+
   public buildMasterEmbedding(
     angleEmbeddings: { step: string; embedding: Float32Array }[]
   ): Float32Array {
-    const dim = 128;
+    if (angleEmbeddings.length === 0) return new Float32Array(0);
+    const dim = angleEmbeddings[0].embedding.length;
     const master = new Float32Array(dim);
     let totalWeight = 0;
 
     for (const { step, embedding } of angleEmbeddings) {
       const weight = step === 'LOOK_CENTER' ? 2.0 : 1.0;
-      for (let i = 0; i < dim; i++) {
+      const len = Math.min(dim, embedding.length);
+      for (let i = 0; i < len; i++) {
         master[i] += embedding[i] * weight;
       }
       totalWeight += weight;

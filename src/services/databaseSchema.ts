@@ -85,6 +85,23 @@ export class LocalDatabaseService {
   }
 
   /**
+   * Delete / Purge an enrolled user profile
+   */
+  public async deleteUser(userId: string): Promise<boolean> {
+    try {
+      const users = await this.getEnrolledUsers();
+      const updated = users.filter(u => u.id !== userId);
+      await AsyncStorage.setItem(USERS_KEY, JSON.stringify(updated));
+      this.usersCache = updated;
+      console.log(`[LocalDatabase] Successfully deleted user: ${userId}`);
+      return true;
+    } catch (e) {
+      console.error('[LocalDatabase] Error deleting user:', e);
+      return false;
+    }
+  }
+
+  /**
    * Performs a highly optimized, vectorized dot-product search across cached personnel profiles.
    * Leverages in-memory float arrays for sub-15ms execution over 10,000 records on Herms engines.
    */
@@ -92,14 +109,17 @@ export class LocalDatabaseService {
     const users = await this.getEnrolledUsers();
     let bestUser: EnrolledUser | null = null;
     let maxSimilarity = -1;
+    const qLen = queryEmbedding.length;
 
     for (let i = 0; i < users.length; i++) {
       const user = users[i];
       const dbEmbedding = user.embedding;
+      const dbLen = dbEmbedding.length;
+      const len = qLen < dbLen ? qLen : dbLen;
 
       // Compute dot product (both vectors are pre-L2-normalized)
       let dotProduct = 0;
-      for (let j = 0; j < 128; j++) {
+      for (let j = 0; j < len; j++) {
         dotProduct += queryEmbedding[j] * dbEmbedding[j];
       }
 
@@ -180,19 +200,19 @@ export class LocalDatabaseService {
         id: 'NHAI-2026-001',
         name: 'Keshav Kumar Agrawal',
         role: 'Toll Supervisor',
-        embedding: this.l2NormalizeVector(Array.from({ length: 128 }, (_, i) => Math.sin(i) * Math.cos(i * 1.5)))
+        embedding: this.l2NormalizeVector(Array.from({ length: 192 }, (_, i) => Math.sin(i) * Math.cos(i * 1.5)))
       },
       {
         id: 'NHAI-2026-002',
         name: 'Harshiya Sharma',
         role: 'Checkpost Inspector',
-        embedding: this.l2NormalizeVector(Array.from({ length: 128 }, (_, i) => Math.sin(i + 1) * Math.cos(i * 2.3)))
+        embedding: this.l2NormalizeVector(Array.from({ length: 192 }, (_, i) => Math.sin(i + 1) * Math.cos(i * 2.3)))
       },
       {
         id: 'NHAI-2026-003',
         name: 'Anurag Mohapatra',
         role: 'Field Security Lead',
-        embedding: this.l2NormalizeVector(Array.from({ length: 128 }, (_, i) => Math.sin(i + 2) * Math.cos(i * 0.9)))
+        embedding: this.l2NormalizeVector(Array.from({ length: 192 }, (_, i) => Math.sin(i + 2) * Math.cos(i * 0.9)))
       }
     );
 
@@ -203,9 +223,9 @@ export class LocalDatabaseService {
       const role = idx % 2 === 0 ? 'Toll Operator' : 'Security Guard';
 
       // Deterministic generation to avoid slow Math.random() loops
-      const rawVector = new Float32Array(128);
+      const rawVector = new Float32Array(192);
       let sumSquares = 0;
-      for (let j = 0; j < 128; j++) {
+      for (let j = 0; j < 192; j++) {
         rawVector[j] = Math.sin(idx * 0.72 + j) * Math.cos(j * 0.95);
         sumSquares += rawVector[j] * rawVector[j];
       }
@@ -235,19 +255,19 @@ export class LocalDatabaseService {
           id: 'NHAI-2026-001',
           name: 'Keshav Kumar Agrawal',
           role: 'Toll Supervisor',
-          embedding: this.l2NormalizeVector(Array.from({ length: 128 }, (_, i) => Math.sin(i) * Math.cos(i * 1.5)))
+          embedding: this.l2NormalizeVector(Array.from({ length: 192 }, (_, i) => Math.sin(i) * Math.cos(i * 1.5)))
         },
         {
           id: 'NHAI-2026-002',
           name: 'Harshiya Sharma',
           role: 'Checkpost Inspector',
-          embedding: this.l2NormalizeVector(Array.from({ length: 128 }, (_, i) => Math.sin(i + 1) * Math.cos(i * 2.3)))
+          embedding: this.l2NormalizeVector(Array.from({ length: 192 }, (_, i) => Math.sin(i + 1) * Math.cos(i * 2.3)))
         },
         {
           id: 'NHAI-2026-003',
           name: 'Anurag Mohapatra',
           role: 'Field Security Lead',
-          embedding: this.l2NormalizeVector(Array.from({ length: 128 }, (_, i) => Math.sin(i + 2) * Math.cos(i * 0.9)))
+          embedding: this.l2NormalizeVector(Array.from({ length: 192 }, (_, i) => Math.sin(i + 2) * Math.cos(i * 0.9)))
         }
       ];
 

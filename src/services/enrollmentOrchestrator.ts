@@ -132,10 +132,10 @@ export class EnrollmentOrchestratorService {
    * @param currentFrame  Optional: current canvas ImageData for CNN inference
    * @returns The latest EnrollmentFrameResult (same as liveness service output)
    */
-  public processFrame(
+  public async processFrame(
     landmarks: Landmark3D[],
-    generateGeometryEmbedding?: (landmarks: Landmark3D[]) => Float32Array
-  ): EnrollmentFrameResult | null {
+    generateGeometryEmbedding?: (landmarks: Landmark3D[]) => Promise<Float32Array> | Float32Array
+  ): Promise<EnrollmentFrameResult | null> {
     if (this.state !== 'ENROLLING') return null;
 
     const result = this.liveness.processEnrollmentFrame(landmarks);
@@ -146,7 +146,7 @@ export class EnrollmentOrchestratorService {
       const completedStep = result.completedSteps[result.completedSteps.length - 1];
       if (completedStep && !this.capturedStepNames.has(completedStep)) {
         this.capturedStepNames.add(completedStep);
-        this._captureAngleEmbedding(completedStep, landmarks, result.pose, generateGeometryEmbedding);
+        await this._captureAngleEmbedding(completedStep, landmarks, result.pose, generateGeometryEmbedding);
       }
     }
 
@@ -156,7 +156,7 @@ export class EnrollmentOrchestratorService {
       const lastStepName = ENROLLMENT_STEPS[ENROLLMENT_STEPS.length - 1].step;
       if (!this.capturedStepNames.has(lastStepName)) {
         this.capturedStepNames.add(lastStepName);
-        this._captureAngleEmbedding(lastStepName, landmarks, result.pose, generateGeometryEmbedding);
+        await this._captureAngleEmbedding(lastStepName, landmarks, result.pose, generateGeometryEmbedding);
       }
       this.state = 'SAVING';
       console.log('[EnrollmentOrchestrator] All steps complete. Transitioning to SAVING state.');
@@ -256,16 +256,16 @@ export class EnrollmentOrchestratorService {
    * to get a real MobileFaceNet embedding. Otherwise falls back to the
    * geometric signature approach (same as DesktopWebDashboard).
    */
-  private _captureAngleEmbedding(
+  private async _captureAngleEmbedding(
     step: string,
     landmarks: Landmark3D[],
     pose: { yaw: number; pitch: number; roll: number },
-    generateGeometryEmbedding?: (landmarks: Landmark3D[]) => Float32Array
-  ): void {
+    generateGeometryEmbedding?: (landmarks: Landmark3D[]) => Promise<Float32Array> | Float32Array
+  ): Promise<void> {
     let rawEmbedding: Float32Array;
 
     if (generateGeometryEmbedding) {
-      rawEmbedding = generateGeometryEmbedding(landmarks);
+      rawEmbedding = await generateGeometryEmbedding(landmarks);
     } else {
       // Built-in geometric signature fallback (128-D nose-relative distances)
       rawEmbedding = this.embedder.generateGeometrySignature(landmarks);

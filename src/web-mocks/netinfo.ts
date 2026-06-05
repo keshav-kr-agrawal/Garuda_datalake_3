@@ -22,6 +22,15 @@ if (typeof window !== 'undefined') {
   window.addEventListener('offline', fireListeners);
 }
 
+export const fetch = async (): Promise<NetInfoState> => {
+  const isOnline = typeof window !== 'undefined' ? window.navigator.onLine : true;
+  return {
+    isConnected: isOnline,
+    isInternetReachable: isOnline,
+    type: 'wifi',
+  };
+};
+
 export const addEventListener = (callback: NetInfoChangeHandler) => {
   listeners.add(callback);
   
@@ -39,4 +48,5 @@ export const addEventListener = (callback: NetInfoChangeHandler) => {
 
 export default {
   addEventListener,
+  fetch,
 };

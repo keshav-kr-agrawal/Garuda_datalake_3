@@ -15,8 +15,12 @@ export const loadTensorFlowModel = async (path: string) => {
   };
 };
 
+export const loadTensorflowModel = loadTensorFlowModel;
+
 export default {
   Tensor,
   loadModel,
   loadTensorFlowModel,
+  loadTensorflowModel,
 };
+
