@@ -107,10 +107,6 @@ export const DesktopWebDashboard: React.FC = () => {
   const [verificationSuccess, setVerificationSuccess] = useState<boolean | null>(null);
 
   const [rosterFilter, setRosterFilter] = useState<'ALL' | 'PRESENT' | 'ABSENT'>('ALL');
-  const [verificationStep, setVerificationStep] = useState<'IDLE' | 'MATCHING' | 'LIVENESS' | 'SUCCESS' | 'FAILED'>('IDLE');
-  const verificationStepRef = useRef<'IDLE' | 'MATCHING' | 'LIVENESS' | 'SUCCESS' | 'FAILED'>('IDLE');
-  const isMatchingInProgressRef = useRef(false);
-  const matchingAttemptsRef = useRef(0);
 
   // Registry & Roster
   const [usersList, setUsersList] = useState<EnrolledUser[]>([]);
@@ -363,17 +359,6 @@ export const DesktopWebDashboard: React.FC = () => {
     setStreamError(null);
     setMatchedProfile(null);
     setVerificationSuccess(null);
-    
-    if (activeTab === 'registry' || isEnrolling) {
-      setVerificationStep('IDLE');
-      verificationStepRef.current = 'IDLE';
-    } else {
-      setVerificationStep('MATCHING');
-      verificationStepRef.current = 'MATCHING';
-    }
-    
-    isMatchingInProgressRef.current = false;
-    matchingAttemptsRef.current = 0;
     setSearchLatency(null);
 
     const mpGlobal = window as any;
@@ -597,79 +582,117 @@ export const DesktopWebDashboard: React.FC = () => {
       return;
     }
 
-    // Two-Step Verification Flow
-    if (verificationStepRef.current === 'MATCHING') {
-      const isStableFace = Math.abs(pose.yaw) < 18 && Math.abs(pose.pitch) < 18 && Math.abs(pose.roll) < 15;
-      if (isStableFace && !isMatchingInProgressRef.current) {
-        isMatchingInProgressRef.current = true;
-        runStepAMatching(scaledLandmarks);
-      }
-      return;
-    }
+    // Challenge-Response Liveness
+    const currentChallenge = activeChallengeRef.current;
+    if (currentChallenge !== 'SUCCESS' && currentChallenge !== 'FAILED') {
+      const resState = livenessService.processFrame(scaledLandmarks, currentChallenge);
+      setChallengeState(resState);
 
-    if (verificationStepRef.current === 'LIVENESS') {
-      const currentChallenge = activeChallengeRef.current;
-      if (currentChallenge !== 'SUCCESS' && currentChallenge !== 'FAILED') {
-        const resState = livenessService.processFrame(scaledLandmarks, currentChallenge);
-        setChallengeState(resState);
-
-        if (resState.progress >= 1.0) {
-          await handleAdvanceRealChallenge(scaledLandmarks);
-        }
+      if (resState.progress >= 1.0) {
+        await handleAdvanceRealChallenge(scaledLandmarks);
       }
     }
   };
 
-  const runStepAMatching = async (landmarks: any[]) => {
-    let queryEmbedding: Float32Array;
-    try {
-      queryEmbedding = await generateRealFaceEmbedding(landmarks);
-    } catch (err: any) {
-      console.error(err);
-      verificationStepRef.current = 'FAILED';
-      setVerificationStep('FAILED');
+  const handleAdvanceRealChallenge = async (landmarks: any[]) => {
+    const list = challengesListRef.current;
+    const idx = activeChallengeIdxRef.current;
+
+    if (idx < list.length - 1) {
+      const nextIdx = idx + 1;
+      activeChallengeIdxRef.current = nextIdx;
+      activeChallengeRef.current = list[nextIdx];
+      
+      setActiveChallengeIdx(nextIdx);
+      livenessService.resetChallengeState();
+      
       setChallengeState(prev => ({
         ...prev,
-        currentChallenge: 'FAILED',
-        message: `Inference Error: ${err.message || String(err)}`
+        currentChallenge: list[nextIdx],
+        progress: 0,
+        message: `Challenge Step ${nextIdx + 1}: Please ${list[nextIdx]}`,
       }));
-      setVerificationSuccess(false);
-      stopWebcam();
-      return;
-    }
+    } else {
+      activeChallengeRef.current = 'SUCCESS';
 
-    const startMs = performance.now();
-    const matchResult = await dbService.vectorSearchMultiAngle(queryEmbedding);
-    const endMs = performance.now();
-    const latency = Math.round(endMs - startMs);
-    setSearchLatency(latency);
+      setChallengeState(prev => ({
+        ...prev,
+        currentChallenge: 'SUCCESS',
+        progress: 1.0,
+        message: 'Liveness approved! Searching local database...',
+      }));
 
-    const isUserMatch = (loginWithFaceActive || isAdmin || isCommonTerminal)
-      ? !!matchResult.user
-      : (matchResult.user && matchResult.user.id === currentUserProfile?.employeeId);
+      let queryEmbedding: Float32Array;
+      try {
+        queryEmbedding = await generateRealFaceEmbedding(landmarks);
+      } catch (err: any) {
+        console.error(err);
+        activeChallengeRef.current = 'FAILED';
+        setChallengeState(prev => ({
+          ...prev,
+          currentChallenge: 'FAILED',
+          message: `Inference Error: ${err.message || String(err)}`
+        }));
+        setVerificationSuccess(false);
+        stopWebcam();
+        return;
+      }
+      
+      const startMs = performance.now();
+      const matchResult = await dbService.vectorSearchMultiAngle(queryEmbedding);
+      const endMs = performance.now();
+      
+      setSearchLatency(Math.round(endMs - startMs));
 
-    if (isUserMatch && matchResult.similarity >= 0.72) {
-      const matchedUser = matchResult.user!;
-      setMatchedProfile(matchedUser);
+      const isUserMatch = (loginWithFaceActive || isAdmin || isCommonTerminal) ? !!matchResult.user : (matchResult.user && matchResult.user.id === currentUserProfile?.employeeId);
 
-      const scaledSim = 0.95 + ((matchResult.similarity - 0.72) / (1.0 - 0.72)) * 0.05;
-      setMatchConfidence(scaledSim);
+      if (isUserMatch && matchResult.similarity >= 0.72) {
+        const matchedUser = matchResult.user!;
+        setMatchedProfile(matchedUser);
+        
+        const scaledSim = 0.95 + ((matchResult.similarity - 0.72) / (1.0 - 0.72)) * 0.05;
+        setMatchConfidence(scaledSim);
 
-      // Check if already marked today
-      const startOfToday = new Date().setHours(0, 0, 0, 0);
-      const isAlreadyMarked =
-        attendanceQueue.some(q => q.employeeId === matchedUser.id && q.enqueuedAt >= startOfToday) ||
-        logsList.some(log => log.userId === matchedUser.id && log.status === 'VERIFIED' && log.timestamp >= startOfToday);
+        // Queue log entry offline via Datalake API
+        const attResult = await datalakeSyncService.markAttendance({
+          employeeId: matchedUser.id,
+          gpsLatitude: gpsLocation.latitude,
+          gpsLongitude: gpsLocation.longitude,
+          gpsAccuracyMeters: gpsLocation.accuracy,
+          matchConfidence: scaledSim,
+          livenessScore: 1.0
+        });
 
-      if (isAlreadyMarked) {
+        if (!attResult.success) {
+          if (attResult.message === 'Attendance already marked for today.') {
+            setMatchedProfile(matchedUser);
+            setMatchConfidence(scaledSim);
+            setVerificationSuccess(true);
+            setAttendanceMarkedToday(true);
+            updateQueueStats();
+            await refreshLogs();
+            stopWebcam();
+            return;
+          }
+
+          activeChallengeRef.current = 'FAILED';
+          setChallengeState(prev => ({
+            ...prev,
+            currentChallenge: 'FAILED',
+            message: attResult.message || 'Verification failed.'
+          }));
+          setVerificationSuccess(false);
+          stopWebcam();
+          return;
+        }
+
         setVerificationSuccess(true);
         setAttendanceMarkedToday(true);
-        verificationStepRef.current = 'SUCCESS';
-        setVerificationStep('SUCCESS');
         updateQueueStats();
         await refreshLogs();
         stopWebcam();
 
+        // Face recognition login transition
         if (loginWithFaceActive) {
           setTimeout(async () => {
             const loginRes = await datalakeSyncService.login(matchedUser.id, "", true);
@@ -694,48 +717,9 @@ export const DesktopWebDashboard: React.FC = () => {
             setVerificationSuccess(null);
           }, 2000);
         }
-        return;
-      }
-
-      // Not marked today, proceed to Step B: Liveness Challenge
-      verificationStepRef.current = 'LIVENESS';
-      setVerificationStep('LIVENESS');
-
-      livenessService.reset();
-      const shuffled = livenessService.generateChallengeSequence();
-      challengesListRef.current = shuffled;
-      activeChallengeIdxRef.current = 0;
-      activeChallengeRef.current = shuffled[0];
-
-      setChallengesList(shuffled);
-      setActiveChallengeIdx(0);
-
-      setChallengeState({
-        currentChallenge: shuffled[0],
-        progress: 0,
-        isCalibrated: false,
-        message: `Match Succeeded! Starting Step B (Liveness). Please ${shuffled[0]}`,
-      });
-    } else {
-      // Increment attempt count on mismatch
-      matchingAttemptsRef.current += 1;
-      
-      if (matchingAttemptsRef.current < 5) {
-        // Update user status log to show attempt number
-        setChallengeState(prev => ({
-          ...prev,
-          message: `Scanning... Face unrecognized (Attempt ${matchingAttemptsRef.current}/5). Adjust face/lighting.`
-        }));
-        
-        // Wait 800ms before clearing flag to scan again (prevents CPU spamming)
-        setTimeout(() => {
-          isMatchingInProgressRef.current = false;
-        }, 800);
       } else {
-        // Max attempts reached, set to FAILED and shut down webcam
-        verificationStepRef.current = 'FAILED';
-        setVerificationStep('FAILED');
-
+        activeChallengeRef.current = 'FAILED';
+        // Provide a more specific failure message
         let failMsg = 'Biometric mismatch. Access Refused.';
         const enrolledCount = (await dbService.getEnrolledUsers()).length;
         if (isCommonTerminal || !isAdmin) {
@@ -749,115 +733,12 @@ export const DesktopWebDashboard: React.FC = () => {
         } else {
           failMsg = `Face matched ${matchResult.user.name} but access restricted to your profile only.`;
         }
-
+        
         setChallengeState(prev => ({
           ...prev,
           currentChallenge: 'FAILED',
           message: failMsg
         }));
-        setVerificationSuccess(false);
-        stopWebcam();
-      }
-    }
-  };
-
-  const handleAdvanceRealChallenge = async (landmarks: any[]) => {
-    const list = challengesListRef.current;
-    const idx = activeChallengeIdxRef.current;
-
-    if (idx < list.length - 1) {
-      const nextIdx = idx + 1;
-      activeChallengeIdxRef.current = nextIdx;
-      activeChallengeRef.current = list[nextIdx];
-
-      setActiveChallengeIdx(nextIdx);
-      livenessService.resetChallengeState();
-
-      setChallengeState(prev => ({
-        ...prev,
-        currentChallenge: list[nextIdx],
-        progress: 0,
-        message: `Challenge Step ${nextIdx + 1}: Please ${list[nextIdx]}`,
-      }));
-    } else {
-      activeChallengeRef.current = 'SUCCESS';
-      setChallengeState(prev => ({
-        ...prev,
-        currentChallenge: 'SUCCESS',
-        progress: 1.0,
-        message: 'Liveness approved! Saving attendance...',
-      }));
-
-      if (matchedProfile) {
-        const attResult = await datalakeSyncService.markAttendance({
-          employeeId: matchedProfile.id,
-          gpsLatitude: gpsLocation.latitude,
-          gpsLongitude: gpsLocation.longitude,
-          gpsAccuracyMeters: gpsLocation.accuracy,
-          matchConfidence: matchConfidence,
-          livenessScore: 1.0
-        });
-
-        if (!attResult.success) {
-          if (attResult.message === 'Attendance already marked for today.') {
-            setVerificationSuccess(true);
-            setAttendanceMarkedToday(true);
-            verificationStepRef.current = 'SUCCESS';
-            setVerificationStep('SUCCESS');
-            updateQueueStats();
-            await refreshLogs();
-            stopWebcam();
-            return;
-          }
-
-          verificationStepRef.current = 'FAILED';
-          setVerificationStep('FAILED');
-          activeChallengeRef.current = 'FAILED';
-          setChallengeState(prev => ({
-            ...prev,
-            currentChallenge: 'FAILED',
-            message: attResult.message || 'Verification failed.'
-          }));
-          setVerificationSuccess(false);
-          stopWebcam();
-          return;
-        }
-
-        setVerificationSuccess(true);
-        setAttendanceMarkedToday(true);
-        verificationStepRef.current = 'SUCCESS';
-        setVerificationStep('SUCCESS');
-        updateQueueStats();
-        await refreshLogs();
-        stopWebcam();
-
-        if (loginWithFaceActive) {
-          setTimeout(async () => {
-            const loginRes = await datalakeSyncService.login(matchedProfile.id, "", true);
-            if (loginRes.success) {
-              const profile = datalakeSyncService.getCurrentProfile();
-              setCurrentUserProfile(profile);
-              setIsLoggedIn(true);
-
-              const attStatus = await datalakeSyncService.getTodayAttendanceStatus();
-              setAttendanceMarkedToday(attStatus.isMarked);
-
-              const adminUser = profile?.role === 'System Administrator' || profile?.employeeId === 'admin';
-              if (adminUser) {
-                setActiveTab('registry');
-                setIsEnrolling(false);
-              } else {
-                setIsEnrolling(false);
-                setActiveTab('terminal');
-              }
-            }
-            setLoginWithFaceActive(false);
-            setVerificationSuccess(null);
-          }, 2000);
-        }
-      } else {
-        verificationStepRef.current = 'FAILED';
-        setVerificationStep('FAILED');
         setVerificationSuccess(false);
         stopWebcam();
       }
@@ -1423,87 +1304,6 @@ export const DesktopWebDashboard: React.FC = () => {
                 </div>
 
                 <div className="verification-session">
-                  {/* Two-step progress indicators */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px', gap: '12px' }}>
-                    <div style={{
-                      flex: 1,
-                      padding: '8px 12px',
-                      borderRadius: '8px',
-                      border: '1px solid var(--border-color)',
-                      background: verificationStep === 'MATCHING' ? 'rgba(11, 60, 115, 0.08)' : (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS' ? 'rgba(16, 185, 129, 0.08)' : 'transparent'),
-                      borderColor: verificationStep === 'MATCHING' ? 'var(--navy-primary)' : (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS' ? '#10B981' : 'var(--border-color)'),
-                      textAlign: 'center',
-                      fontSize: '11px',
-                      fontWeight: 'bold',
-                      color: verificationStep === 'MATCHING' ? 'var(--navy-primary)' : (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS' ? '#065F46' : 'var(--text-gray)'),
-                      transition: 'all 0.3s'
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
-                        <span style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          width: '16px',
-                          height: '16px',
-                          borderRadius: '50%',
-                          background: (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS') ? '#10B981' : 'var(--navy-primary)',
-                          color: '#fff',
-                          fontSize: '10px'
-                        }}>{(verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS') ? '✓' : '1'}</span>
-                        <span>Face Match</span>
-                      </div>
-                    </div>
-                    
-                    <div style={{
-                      flex: 1,
-                      padding: '8px 12px',
-                      borderRadius: '8px',
-                      border: '1px solid var(--border-color)',
-                      background: verificationStep === 'LIVENESS' ? 'rgba(11, 60, 115, 0.08)' : (verificationStep === 'SUCCESS' ? 'rgba(16, 185, 129, 0.08)' : 'transparent'),
-                      borderColor: verificationStep === 'LIVENESS' ? 'var(--navy-primary)' : (verificationStep === 'SUCCESS' ? '#10B981' : 'var(--border-color)'),
-                      textAlign: 'center',
-                      fontSize: '11px',
-                      fontWeight: 'bold',
-                      color: verificationStep === 'LIVENESS' ? 'var(--navy-primary)' : (verificationStep === 'SUCCESS' ? '#065F46' : 'var(--text-gray)'),
-                      transition: 'all 0.3s'
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
-                        <span style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          width: '16px',
-                          height: '16px',
-                          borderRadius: '50%',
-                          background: verificationStep === 'SUCCESS' ? '#10B981' : (verificationStep === 'LIVENESS' ? 'var(--navy-primary)' : 'var(--border-color)'),
-                          color: (verificationStep === 'SUCCESS' || verificationStep === 'LIVENESS') ? '#fff' : 'var(--text-gray)',
-                          fontSize: '10px'
-                        }}>{verificationStep === 'SUCCESS' ? '✓' : '2'}</span>
-                        <span>Liveness Scan</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {matchedProfile && (
-                    <div style={{
-                      background: 'rgba(16, 185, 129, 0.05)',
-                      border: '1px solid rgba(16, 185, 129, 0.2)',
-                      borderRadius: '8px',
-                      padding: '10px 14px',
-                      marginBottom: '16px',
-                      fontSize: '12px'
-                    }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                        <span style={{ color: 'var(--text-gray)' }}>Matched Identity:</span>
-                        <strong style={{ color: '#065F46' }}>{matchedProfile.name} ({matchedProfile.role})</strong>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--text-gray)' }}>Search Performance:</span>
-                        <strong style={{ color: 'var(--navy-dark)' }}>{searchLatency !== null ? `${searchLatency}ms` : 'Calculating...'}</strong>
-                      </div>
-                    </div>
-                  )}
-
                   <div className="session-progress">
                     <div className="progress-bar">
                       <div 
@@ -2526,87 +2326,6 @@ export const DesktopWebDashboard: React.FC = () => {
           </div>
 
           <div className="verification-session">
-            {/* Two-step progress indicators */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px', gap: '12px' }}>
-              <div style={{
-                flex: 1,
-                padding: '8px 12px',
-                borderRadius: '8px',
-                border: '1px solid var(--border-color)',
-                background: verificationStep === 'MATCHING' ? 'rgba(11, 60, 115, 0.08)' : (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS' ? 'rgba(16, 185, 129, 0.08)' : 'transparent'),
-                borderColor: verificationStep === 'MATCHING' ? 'var(--navy-primary)' : (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS' ? '#10B981' : 'var(--border-color)'),
-                textAlign: 'center',
-                fontSize: '11px',
-                fontWeight: 'bold',
-                color: verificationStep === 'MATCHING' ? 'var(--navy-primary)' : (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS' ? '#065F46' : 'var(--text-gray)'),
-                transition: 'all 0.3s'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
-                  <span style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    width: '16px',
-                    height: '16px',
-                    borderRadius: '50%',
-                    background: (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS') ? '#10B981' : 'var(--navy-primary)',
-                    color: '#fff',
-                    fontSize: '10px'
-                  }}>{(verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS') ? '✓' : '1'}</span>
-                  <span>Face Match</span>
-                </div>
-              </div>
-              
-              <div style={{
-                flex: 1,
-                padding: '8px 12px',
-                borderRadius: '8px',
-                border: '1px solid var(--border-color)',
-                background: verificationStep === 'LIVENESS' ? 'rgba(11, 60, 115, 0.08)' : (verificationStep === 'SUCCESS' ? 'rgba(16, 185, 129, 0.08)' : 'transparent'),
-                borderColor: verificationStep === 'LIVENESS' ? 'var(--navy-primary)' : (verificationStep === 'SUCCESS' ? '#10B981' : 'var(--border-color)'),
-                textAlign: 'center',
-                fontSize: '11px',
-                fontWeight: 'bold',
-                color: verificationStep === 'LIVENESS' ? 'var(--navy-primary)' : (verificationStep === 'SUCCESS' ? '#065F46' : 'var(--text-gray)'),
-                transition: 'all 0.3s'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
-                  <span style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    width: '16px',
-                    height: '16px',
-                    borderRadius: '50%',
-                    background: verificationStep === 'SUCCESS' ? '#10B981' : (verificationStep === 'LIVENESS' ? 'var(--navy-primary)' : 'var(--border-color)'),
-                    color: (verificationStep === 'SUCCESS' || verificationStep === 'LIVENESS') ? '#fff' : 'var(--text-gray)',
-                    fontSize: '10px'
-                  }}>{verificationStep === 'SUCCESS' ? '✓' : '2'}</span>
-                  <span>Liveness Scan</span>
-                </div>
-              </div>
-            </div>
-
-            {matchedProfile && (
-              <div style={{
-                background: 'rgba(16, 185, 129, 0.05)',
-                border: '1px solid rgba(16, 185, 129, 0.2)',
-                borderRadius: '8px',
-                padding: '10px 14px',
-                marginBottom: '16px',
-                fontSize: '12px'
-              }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                  <span style={{ color: 'var(--text-gray)' }}>Matched Identity:</span>
-                  <strong style={{ color: '#065F46' }}>{matchedProfile.name} ({matchedProfile.role})</strong>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ color: 'var(--text-gray)' }}>Search Performance:</span>
-                  <strong style={{ color: 'var(--navy-dark)' }}>{searchLatency !== null ? `${searchLatency}ms` : 'Calculating...'}</strong>
-                </div>
-              </div>
-            )}
-
             <div className="session-progress">
               <div className="progress-bar">
                 <div 
