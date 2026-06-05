@@ -354,9 +354,21 @@ export const MobileFaceNetCheck: React.FC = () => {
     <div style={{ minHeight:'100vh', background:'#000', color:'#fff', fontFamily:'monospace', fontSize:13, boxSizing:'border-box' }}>
       <style>{`
         * { box-sizing: border-box; }
-        .fn-root { display: grid; grid-template-columns: 1fr 300px 320px; gap: 0; min-height: 100vh; }
-        @media(max-width:1200px){ .fn-root { grid-template-columns: 1fr 280px; } .fn-gallery-col { display:none; } }
-        .col { border-right: 1px solid #141414; display: flex; flex-direction: column; }
+        .fn-root { display: flex; flex-flow: row wrap; min-height: 100vh; }
+        .col { border-right: 1px solid #141414; display: flex; flex-direction: column; flex: 1 1 300px; }
+        @media(min-width: 1201px) {
+          .col:nth-child(1) { flex: 1 1 400px; }
+          .col:nth-child(2) { flex: 0 0 300px; }
+          .col:nth-child(3) { flex: 0 0 320px; }
+        }
+        @media(max-width:1200px) and (min-width:768px) {
+          .col:nth-child(1) { flex: 1 1 calc(60% - 10px); }
+          .col:nth-child(2) { flex: 1 1 calc(40% - 10px); }
+          .col:nth-child(3) { flex: 1 1 100% !important; border-top: 1px solid #141414; border-right: none; }
+        }
+        @media(max-width:768px) {
+          .col { flex: 1 1 100% !important; border-right: none; border-bottom: 1px solid #141414; }
+        }
         .col-hdr { padding: 14px 18px; border-bottom: 1px solid #141414; background: #040404; }
         .col-body { padding: 16px 18px; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
         .sec { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 1px; border-left: 2px solid #fff; padding-left: 8px; margin-bottom: 10px; font-weight: 700; }

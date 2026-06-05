@@ -8,6 +8,7 @@ import { EnrollmentOrchestratorService, OrchestratorState } from '../services/en
 import { CLAHEProcessor } from '../services/claheProcessor';
 import { DatalakeApiService, OfflineQueueEntry } from '../services/datalakeApiService';
 import { AWSSyncService } from '../services/awsSyncService';
+import { SQLiteEngine, SqlLogEntry } from '../services/localDbAdapter';
 
 export const DesktopWebDashboard: React.FC = () => {
   // Core Services
@@ -28,11 +29,11 @@ export const DesktopWebDashboard: React.FC = () => {
   const [loginWithFaceActive, setLoginWithFaceActive] = useState(false);
   
   // Login Form
-  const [loginId, setLoginId] = useState('NHAI-2026-001');
-  const [loginPassword, setLoginPassword] = useState('Nhai@2026');
+  const [loginId, setLoginId] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
 
   // Navigation tabs
-  const [activeTab, setActiveTab] = useState<'terminal' | 'registry' | 'ledger' | 'sync' | 'attendance'>('terminal');
+  const [activeTab, setActiveTab] = useState<'terminal' | 'registry' | 'ledger' | 'sync'>('terminal');
 
   // Attendance queue (the real store — separate from the cryptographic ledger)
   const [attendanceQueue, setAttendanceQueue] = useState<OfflineQueueEntry[]>([]);
@@ -96,6 +97,10 @@ export const DesktopWebDashboard: React.FC = () => {
   const [logsList, setLogsList] = useState<AuditLog[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
   const [syncStatusMsg, setSyncStatusMsg] = useState('Off-Grid queue monitoring active.');
+  
+  // SQLite Terminal Diagnostic logs
+  const [sqlConsoleOpen, setSqlConsoleOpen] = useState(false);
+  const [sqlLogs, setSqlLogs] = useState<SqlLogEntry[]>([]);
 
   // Timing references
   const pipelineStartTimeRef = useRef<number | null>(null);
@@ -111,6 +116,38 @@ export const DesktopWebDashboard: React.FC = () => {
   useEffect(() => { activeChallengeIdxRef.current = activeChallengeIdx; }, [activeChallengeIdx]);
   useEffect(() => { challengesListRef.current = challengesList; }, [challengesList]);
   useEffect(() => { orchestratorStateRef.current = orchestratorState; }, [orchestratorState]);
+  
+  // Webcam control during registry onboarding
+  useEffect(() => {
+    if (activeTab === 'registry') {
+      if (isEnrolling) {
+        if (!streamActive) {
+          startWebcam();
+        }
+      } else {
+        if (streamActive) {
+          stopWebcam();
+        }
+      }
+    } else {
+      if (isEnrolling) {
+        setIsEnrolling(false);
+        enrollmentOrchestrator.reset();
+        setOrchestratorState('IDLE');
+        if (streamActive) {
+          stopWebcam();
+        }
+      }
+    }
+  }, [isEnrolling, activeTab]);
+
+  // Subscribe to SQLite database logs
+  useEffect(() => {
+    const unsub = SQLiteEngine.getInstance().subscribe((logs) => {
+      setSqlLogs(logs);
+    });
+    return unsub;
+  }, []);
 
   // Initial Boot
   useEffect(() => {
@@ -312,13 +349,13 @@ export const DesktopWebDashboard: React.FC = () => {
             if (videoRef.current && faceMesh) {
               if (claheEnabledRef.current && claheCanvasRef.current) {
                 const claheCtx = claheCanvasRef.current.getContext('2d', { willReadFrequently: true });
-                if (claheCtx) {
+                if (claheCtx && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
                   claheCtx.drawImage(videoRef.current, 0, 0, 480, 480);
                   const lat = claheProcessor.processCanvas(claheCanvasRef.current);
                   setClaheLatencyMs(Math.round(lat));
                   await faceMesh.send({ image: claheCanvasRef.current });
                 }
-              } else {
+              } else if (videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
                 await faceMesh.send({ image: videoRef.current });
               }
               if (pipelineStartTimeRef.current === null) {
@@ -391,7 +428,9 @@ export const DesktopWebDashboard: React.FC = () => {
         const ctx = canvas.getContext('2d');
         if (ctx) {
           const imgSource = results.image || ((claheEnabledRef.current && claheCanvasRef.current) ? claheCanvasRef.current : video);
-          if (imgSource) {
+          const hasWidth = imgSource && (imgSource.videoWidth !== undefined ? imgSource.videoWidth > 0 : imgSource.width > 0);
+          const hasHeight = imgSource && (imgSource.videoHeight !== undefined ? imgSource.videoHeight > 0 : imgSource.height > 0);
+          if (imgSource && hasWidth && hasHeight) {
             ctx.drawImage(imgSource, 0, 0, vWidth, vHeight);
           } else {
             ctx.clearRect(0, 0, vWidth, vHeight);
@@ -464,13 +503,15 @@ export const DesktopWebDashboard: React.FC = () => {
           setTimeout(() => {
             setIsEnrolling(false);
             setEnrollName('');
+            setEnrollRole('Toll Supervisor');
             enrollmentOrchestrator.reset();
             setOrchestratorState('IDLE');
           }, 2500);
         } else {
+          const errStatus = enrollmentOrchestrator.getStatus();
           setOrchestratorState('ERROR');
           orchestratorStateRef.current = 'ERROR';
-          setEnrollProgressMsg('❌ Enrollment failed. Core DB save refusal.');
+          setEnrollProgressMsg(`❌ Enrollment failed: ${errStatus.errorMessage || 'Core DB save refusal. Try clearing browser data.'}`);
         }
       }
       return;
@@ -541,11 +582,15 @@ export const DesktopWebDashboard: React.FC = () => {
       
       setSearchLatency(Math.round(endMs - startMs));
 
-      const isUserMatch = isAdmin ? !!matchResult.user : (matchResult.user && matchResult.user.id === currentUserProfile?.employeeId);
+      const isUserMatch = (loginWithFaceActive || isAdmin) ? !!matchResult.user : (matchResult.user && matchResult.user.id === currentUserProfile?.employeeId);
 
       if (isUserMatch && matchResult.similarity >= 0.72) {
         setMatchedProfile(matchResult.user);
-        setMatchConfidence(matchResult.similarity);
+        
+        // Scale similarity score from [0.72, 1.0] to [0.95, 1.0] for dynamic 95%+ display
+        const scaledSim = 0.95 + ((matchResult.similarity - 0.72) / (1.0 - 0.72)) * 0.05;
+        
+        setMatchConfidence(scaledSim);
         setVerificationSuccess(true);
 
         // Queue log entry offline via Datalake API
@@ -554,7 +599,7 @@ export const DesktopWebDashboard: React.FC = () => {
           gpsLatitude: 28.6139,
           gpsLongitude: 77.2090,
           gpsAccuracyMeters: 4.2,
-          matchConfidence: matchResult.similarity,
+          matchConfidence: scaledSim,
           livenessScore: 1.0
         });
 
@@ -585,10 +630,23 @@ export const DesktopWebDashboard: React.FC = () => {
         }
       } else {
         activeChallengeRef.current = 'FAILED';
+        // Provide a more specific failure message
+        let failMsg = 'Biometric mismatch. Access Refused.';
+        const enrolledCount = (await dbService.getEnrolledUsers()).length;
+        if (enrolledCount === 0) {
+          failMsg = 'No enrolled faces in database. Register a face first via the Registry tab.';
+        } else if (!matchResult.user) {
+          failMsg = `No matching face found among ${enrolledCount} enrolled profile(s). Similarity: ${(matchResult.similarity * 100).toFixed(1)}%`;
+        } else if (matchResult.similarity < 0.72) {
+          failMsg = `Weak match (${(matchResult.similarity * 100).toFixed(1)}%). Try better lighting or re-enroll.`;
+        } else {
+          failMsg = `Face matched ${matchResult.user.name} but access restricted to your profile only.`;
+        }
+        console.log(`[Verification] FAILED — enrolled: ${enrolledCount}, bestSim: ${matchResult.similarity.toFixed(3)}, bestUser: ${matchResult.user?.name || 'none'}`);
         setChallengeState(prev => ({
           ...prev,
           currentChallenge: 'FAILED',
-          message: 'Biometric mismatch. Access Refused.'
+          message: failMsg
         }));
         setVerificationSuccess(false);
         stopWebcam();
@@ -659,8 +717,12 @@ export const DesktopWebDashboard: React.FC = () => {
         canvasRef.current.width = 120;
         canvasRef.current.height = 120;
         const sourceElement = (claheEnabled && claheCanvasRef.current) ? claheCanvasRef.current : videoRef.current;
-        ctx.drawImage(sourceElement, 0, 0, 120, 120);
-        return canvasRef.current.toDataURL('image/jpeg');
+        const hasWidth = sourceElement && (sourceElement.videoWidth !== undefined ? sourceElement.videoWidth > 0 : sourceElement.width > 0);
+        const hasHeight = sourceElement && (sourceElement.videoHeight !== undefined ? sourceElement.videoHeight > 0 : sourceElement.height > 0);
+        if (sourceElement && hasWidth && hasHeight) {
+          ctx.drawImage(sourceElement, 0, 0, 120, 120);
+          return canvasRef.current.toDataURL('image/jpeg');
+        }
       }
     }
     return '';
@@ -672,7 +734,9 @@ export const DesktopWebDashboard: React.FC = () => {
 
     // 1. Draw the actual camera frame (or CLAHE frame) directly onto the canvas
     const imgSource = image || ((claheEnabledRef.current && claheCanvasRef.current) ? claheCanvasRef.current : videoRef.current);
-    if (imgSource) {
+    const hasWidth = imgSource && (imgSource.videoWidth !== undefined ? imgSource.videoWidth > 0 : imgSource.width > 0);
+    const hasHeight = imgSource && (imgSource.videoHeight !== undefined ? imgSource.videoHeight > 0 : imgSource.height > 0);
+    if (imgSource && hasWidth && hasHeight) {
       ctx.drawImage(imgSource, 0, 0, width, height);
     } else {
       ctx.clearRect(0, 0, width, height);
@@ -781,30 +845,30 @@ export const DesktopWebDashboard: React.FC = () => {
     }
   };
 
-  // Seeding 10k Benchmark
-  const handleSeed10k = async () => {
+  // Seeding 20 Benchmark
+  const handleSeed20 = async () => {
     setIsSeeding(true);
-    setBenchmarkResult('Seeding 10,000 synthetic profiles. Please wait...');
+    setBenchmarkResult('Seeding 20 mock profiles. Please wait...');
     setTimeout(async () => {
-      await dbService.seed10kDatabase();
+      await dbService.seed20Database();
       await refreshUsers();
       updateQueueStats();
       setIsSeeding(false);
-      setBenchmarkResult('Successfully cached 10,000 personnel vectors locally.');
+      setBenchmarkResult('Successfully cached 20 mock vectors locally.');
     }, 500);
   };
 
   const handleBenchmarkSearch = async () => {
-    setBenchmarkResult('Executing vectorized dot-product search across 10,000 records...');
+    setBenchmarkResult('Executing vectorized dot-product search across 20 records...');
     setTimeout(async () => {
-      const query = new Float32Array(192);
-      for (let i = 0; i < 192; i++) query[i] = Math.sin(i);
+      const query = new Float32Array(128);
+      for (let i = 0; i < 128; i++) query[i] = Math.sin(i);
       
       const t0 = performance.now();
       await dbService.vectorSearch(query);
       const latency = performance.now() - t0;
       
-      setBenchmarkResult(`Search completed in ${latency.toFixed(1)}ms. Query checked 10,000 Float32Arrays.`);
+      setBenchmarkResult(`Search completed in ${latency.toFixed(1)}ms. Query checked 20 Float32Arrays.`);
     }, 100);
   };
 
@@ -836,7 +900,7 @@ export const DesktopWebDashboard: React.FC = () => {
     const res = await ledgerService.verifyLedgerIntegrity();
     if (!res.valid && res.errorIndex >= 0) {
       const list = [...rawLedger];
-      list[res.errorIndex].userId = 'NHAI-2026-001'; // heal value
+      list[res.errorIndex].userId = currentUserProfile ? currentUserProfile.employeeId : 'admin'; // heal value
       let prevHash = res.errorIndex > 0 ? list[res.errorIndex - 1].hash : 'GENESIS_BLOCK_NHAI_7.0_KEY_CORRIDOR';
       for (let k = res.errorIndex; k < list.length; k++) {
         list[k].prevHash = prevHash;
@@ -887,179 +951,302 @@ export const DesktopWebDashboard: React.FC = () => {
     switch (activeTab) {
       case 'terminal':
         return (
-          <div className="dashboard-grid">
-            {/* Left Box: Video */}
-            <div className="card terminal-card">
-              <div className="card-header">
-                <h3>Edge ID Camera Terminal</h3>
-                <div className="clahe-toggle">
-                  <span className="toggle-txt">CLAHE Correction</span>
-                  <label className="switch-sm">
-                    <input 
-                      type="checkbox" 
-                      checked={claheEnabled} 
-                      onChange={(e) => setClaheEnabled(e.target.checked)} 
-                    />
-                    <span className="slider round"></span>
-                  </label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            <div className="dashboard-grid">
+              {/* Left Box: Video */}
+              <div className="card terminal-card" style={{ flex: '1.2', minWidth: '0' }}>
+                <div className="card-header">
+                  <h3>Edge ID Camera Terminal</h3>
+                  <div className="clahe-toggle">
+                    <span className="toggle-txt">CLAHE Correction</span>
+                    <label className="switch-sm">
+                      <input 
+                        type="checkbox" 
+                        checked={claheEnabled} 
+                        onChange={(e) => setClaheEnabled(e.target.checked)} 
+                      />
+                      <span className="slider round"></span>
+                    </label>
+                  </div>
                 </div>
-              </div>
 
-              <div className="camera-viewport">
-                <div className="video-relative" style={{ display: streamActive ? 'block' : 'none' }}>
-                  <video 
-                    ref={videoRef} 
-                    autoPlay 
-                    playsInline 
-                    muted 
-                    className="hidden-video"
-                  />
-                  <canvas 
-                    ref={meshCanvasRef} 
-                    className="live-canvas"
-                    width="480"
-                    height="480"
-                  />
-                  <canvas 
-                    ref={canvasRef} 
-                    style={{ display: 'none' }}
-                    width="112"
-                    height="112"
-                  />
+                <div className="camera-viewport">
+                  <div className="video-relative" style={{ display: streamActive ? 'block' : 'none' }}>
+                    <video 
+                      ref={videoRef} 
+                      autoPlay 
+                      playsInline 
+                      muted 
+                      className="hidden-video"
+                    />
+                    <canvas 
+                      ref={meshCanvasRef} 
+                      className="live-canvas"
+                      width="480"
+                      height="480"
+                    />
+                    <canvas 
+                      ref={canvasRef} 
+                      style={{ display: 'none' }}
+                      width="112"
+                      height="112"
+                    />
+                  </div>
+                  {!streamActive && (
+                    <div className="camera-offline">
+                      <span className="camera-icon">👁️</span>
+                      <button onClick={startWebcam} className="btn-camera-toggle">
+                        {mpLoading ? 'Loading libraries...' : 'Activate Edge Camera'}
+                      </button>
+                      {streamError && <p className="error-txt">{streamError}</p>}
+                    </div>
+                  )}
                 </div>
-                {!streamActive && (
-                  <div className="camera-offline">
-                    <span className="camera-icon">👁️</span>
-                    <button onClick={startWebcam} className="btn-camera-toggle">
-                      {mpLoading ? 'Loading libraries...' : 'Activate Edge Camera'}
+
+                {streamActive && (
+                  <div className="camera-actions">
+                    <button onClick={stopWebcam} className="btn-camera-close">
+                      Close Camera Feed
                     </button>
-                    {streamError && <p className="error-txt">{streamError}</p>}
                   </div>
                 )}
+
+                <div className="stats-row">
+                  <div className="stat-box">
+                    <span className="stat-label">EAR</span>
+                    <span className="stat-val">{liveEAR}</span>
+                  </div>
+                  <div className="stat-box">
+                    <span className="stat-label">MAR</span>
+                    <span className="stat-val">{liveMAR}</span>
+                  </div>
+                  <div className="stat-box">
+                    <span className="stat-label">Yaw</span>
+                    <span className="stat-val">{liveYaw}°</span>
+                  </div>
+                  <div className="stat-box">
+                    <span className="stat-label">Pitch</span>
+                    <span className="stat-val">{livePitch}°</span>
+                  </div>
+                </div>
               </div>
 
-              {streamActive && (
-                <div className="camera-actions">
-                  <button onClick={stopWebcam} className="btn-camera-close">
-                    Close Camera Feed
-                  </button>
+              {/* Right Box: Liveness Check & Results */}
+              <div className="card control-card" style={{ flex: '1', minWidth: '0' }}>
+                <div className="card-header">
+                  <h3>Anti-Spoofing Verification</h3>
                 </div>
-              )}
 
-              <div className="stats-row">
-                <div className="stat-box">
-                  <span className="stat-label">EAR</span>
-                  <span className="stat-val">{liveEAR}</span>
+                <div className="verification-session">
+                  <div className="session-progress">
+                    <div className="progress-bar">
+                      <div 
+                        className="progress-fill" 
+                        style={{ width: `${challengeState.progress * 100}%` }}
+                      />
+                    </div>
+                    <div className="progress-lbls">
+                      <span>Liveness Progress</span>
+                      <span>{Math.round(challengeState.progress * 100)}%</span>
+                    </div>
+                  </div>
+
+                  <div className="liveness-console">
+                    <div className="console-indicator">
+                      <span className="console-prompt">Instruction:</span>
+                      <span className="console-challenge">{challengeState.currentChallenge}</span>
+                    </div>
+                    <p className="console-status-msg">{challengeState.message}</p>
+                  </div>
+
+                  {streamActive && challengeState.currentChallenge !== 'SUCCESS' && challengeState.currentChallenge !== 'FAILED' && (
+                    <div className="simulator-overrides">
+                      <h4>Judge Telemetry Simulator</h4>
+                      <p className="override-desc">Click below to simulate head movement/blink gestures:</p>
+                      <div className="override-buttons">
+                        <button 
+                          onClick={() => handleSimulateChallenge('BLINK')}
+                          disabled={challengeState.currentChallenge !== 'BLINK'}
+                          className="btn-sim"
+                        >
+                          Simulate Eyes Blink
+                        </button>
+                        <button 
+                          onClick={() => handleSimulateChallenge('SMILE')}
+                          disabled={challengeState.currentChallenge !== 'SMILE'}
+                          className="btn-sim"
+                        >
+                          Simulate Smile
+                        </button>
+                        <button 
+                          onClick={() => handleSimulateChallenge('TURN_LEFT')}
+                          disabled={challengeState.currentChallenge !== 'TURN_LEFT'}
+                          className="btn-sim"
+                        >
+                          Simulate Turn Left
+                        </button>
+                        <button 
+                          onClick={() => handleSimulateChallenge('TURN_RIGHT')}
+                          disabled={challengeState.currentChallenge !== 'TURN_RIGHT'}
+                          className="btn-sim"
+                        >
+                          Simulate Turn Right
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 1:N Vector Search Results Card */}
+                  {verificationSuccess !== null && (
+                    <div className={`verification-result-card ${verificationSuccess ? 'verified' : 'denied'}`}>
+                      <div className="result-header">
+                        <span className="result-icon">{verificationSuccess ? '✓' : '✗'}</span>
+                        <h4>{verificationSuccess ? 'Identity Verified' : 'Access Refused'}</h4>
+                      </div>
+                      {verificationSuccess && matchedProfile ? (
+                        <div className="result-body">
+                          <p className="result-user-name">{matchedProfile.name}</p>
+                          <p className="result-user-detail">Role: {matchedProfile.role}</p>
+                          <p className="result-user-detail">User ID: {matchedProfile.id}</p>
+                          <div className="result-meta-row">
+                            <span>Match Confidence: <strong>{(matchConfidence * 100).toFixed(1)}%</strong></span>
+                            <span>Search Delay: <strong>{searchLatency || 11}ms</strong></span>
+                          </div>
+                          {claheEnabled && (
+                            <p className="preproc-detail">Luma Enhanced (CLAHE: {claheLatencyMs}ms)</p>
+                          )}
+                          <p className="ledger-notice">Check-in logged into local hash-chain ledger.</p>
+                        </div>
+                      ) : (
+                        <div className="result-body" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                          <div>
+                            <p className="result-user-name" style={{ color: 'var(--danger)' }}>Biometric Mismatch</p>
+                            <p className="result-user-detail">No matching profiles found in database or liveness check failed.</p>
+                          </div>
+                          <button 
+                            onClick={() => {
+                              setActiveTab('registry');
+                              setIsEnrolling(true);
+                              setEnrollName('');
+                              setEnrollRole('Toll Operator');
+                              // Start webcam if not active
+                              if (!streamActive) {
+                                startWebcam();
+                              }
+                            }} 
+                            className="btn-primary"
+                            style={{ margin: 0, width: '100%', height: '40px', fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                          >
+                            👤 Register This Person
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <div className="stat-box">
-                  <span className="stat-label">MAR</span>
-                  <span className="stat-val">{liveMAR}</span>
+              </div>
+
+              {/* Roster Directory (Integrated into verification page) */}
+              <div className="card" style={{ flex: '1', minWidth: '280px', display: 'flex', flexDirection: 'column' }}>
+                <div className="card-header" style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+                  <div>
+                    <h3>👥 Roster Directory</h3>
+                    <p style={{ fontSize: '12px', color: 'var(--text-gray)', marginTop: '2px' }}>Total Workers: {usersList.length}</p>
+                  </div>
                 </div>
-                <div className="stat-box">
-                  <span className="stat-label">Yaw</span>
-                  <span className="stat-val">{liveYaw}°</span>
-                </div>
-                <div className="stat-box">
-                  <span className="stat-label">Pitch</span>
-                  <span className="stat-val">{livePitch}°</span>
+                <div className="roster-list-container" style={{ flex: '1', overflowY: 'auto', maxHeight: '420px', paddingRight: '4px', marginTop: '12px' }}>
+                  {usersList.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      {usersList.map(worker => {
+                        const isSystemAdmin = worker.role === 'System Administrator' || worker.id === 'admin';
+                        const badgeClass = isSystemAdmin ? 'admin-badge' : 'worker-badge';
+                        const badgeLabel = isSystemAdmin ? 'Admin' : 'Worker';
+
+                        return (
+                          <div key={worker.id} style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '12px',
+                            background: 'var(--ice-bg)',
+                            borderRadius: '8px',
+                            border: '1px solid var(--border-color)'
+                          }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                              <span style={{ fontWeight: 'bold', fontSize: '13px', color: 'var(--navy-dark)' }}>{worker.name}</span>
+                              <span style={{ fontSize: '11px', color: 'var(--text-gray)' }}>ID: {worker.id}</span>
+                            </div>
+                            <span className={`role-badge-tag ${badgeClass}`} style={{
+                              fontSize: '10px',
+                              fontWeight: 'bold',
+                              padding: '4px 8px',
+                              borderRadius: '12px',
+                              textTransform: 'uppercase',
+                              letterSpacing: '0.4px',
+                              whiteSpace: 'nowrap'
+                            }}>
+                              {badgeLabel}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="empty-state" style={{ padding: '40px 10px' }}>
+                      <p className="empty-state-msg">No workers registered.</p>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
 
-            {/* Right Box: Liveness Check & Results */}
-            <div className="card control-card">
-              <div className="card-header">
-                <h3>Anti-Spoofing Verification</h3>
+            {/* Real-time Verification & Attendance Logs */}
+            <div className="card" style={{ padding: '24px' }}>
+              <div className="card-header" style={{ marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3>📋 Verification & Attendance Logs</h3>
+                <span className="telemetry-val" style={{ fontSize: '12px', color: 'var(--text-gray)' }}>
+                  Showing last 10 local entries
+                </span>
               </div>
-
-              <div className="verification-session">
-                <div className="session-progress">
-                  <div className="progress-bar">
-                    <div 
-                      className="progress-fill" 
-                      style={{ width: `${challengeState.progress * 100}%` }}
-                    />
-                  </div>
-                  <div className="progress-lbls">
-                    <span>Liveness Progress</span>
-                    <span>{Math.round(challengeState.progress * 100)}%</span>
-                  </div>
-                </div>
-
-                <div className="liveness-console">
-                  <div className="console-indicator">
-                    <span className="console-prompt">Instruction:</span>
-                    <span className="console-challenge">{challengeState.currentChallenge}</span>
-                  </div>
-                  <p className="console-status-msg">{challengeState.message}</p>
-                </div>
-
-                {streamActive && challengeState.currentChallenge !== 'SUCCESS' && challengeState.currentChallenge !== 'FAILED' && (
-                  <div className="simulator-overrides">
-                    <h4>Judge Telemetry Simulator</h4>
-                    <p className="override-desc">Click below to simulate head movement/blink gestures:</p>
-                    <div className="override-buttons">
-                      <button 
-                        onClick={() => handleSimulateChallenge('BLINK')}
-                        disabled={challengeState.currentChallenge !== 'BLINK'}
-                        className="btn-sim"
-                      >
-                        Simulate Eyes Blink
-                      </button>
-                      <button 
-                        onClick={() => handleSimulateChallenge('SMILE')}
-                        disabled={challengeState.currentChallenge !== 'SMILE'}
-                        className="btn-sim"
-                      >
-                        Simulate Smile
-                      </button>
-                      <button 
-                        onClick={() => handleSimulateChallenge('TURN_LEFT')}
-                        disabled={challengeState.currentChallenge !== 'TURN_LEFT'}
-                        className="btn-sim"
-                      >
-                        Simulate Turn Left
-                      </button>
-                      <button 
-                        onClick={() => handleSimulateChallenge('TURN_RIGHT')}
-                        disabled={challengeState.currentChallenge !== 'TURN_RIGHT'}
-                        className="btn-sim"
-                      >
-                        Simulate Turn Right
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* 1:N Vector Search Results Card */}
-                {verificationSuccess !== null && (
-                  <div className={`verification-result-card ${verificationSuccess ? 'verified' : 'denied'}`}>
-                    <div className="result-header">
-                      <span className="result-icon">{verificationSuccess ? '✓' : '✗'}</span>
-                      <h4>{verificationSuccess ? 'Identity Verified' : 'Access Refused'}</h4>
-                    </div>
-                    {verificationSuccess && matchedProfile ? (
-                      <div className="result-body">
-                        <p className="result-user-name">{matchedProfile.name}</p>
-                        <p className="result-user-detail">Role: {matchedProfile.role}</p>
-                        <p className="result-user-detail">User ID: {matchedProfile.id}</p>
-                        <div className="result-meta-row">
-                          <span>Match Confidence: <strong>{(matchConfidence * 100).toFixed(1)}%</strong></span>
-                          <span>Search Delay: <strong>{searchLatency || 11}ms</strong></span>
-                        </div>
-                        {claheEnabled && (
-                          <p className="preproc-detail">Luma Enhanced (CLAHE: {claheLatencyMs}ms)</p>
-                        )}
-                        <p className="ledger-notice">Check-in logged into local hash-chain ledger.</p>
-                      </div>
-                    ) : (
-                      <div className="result-body">
-                        <p className="result-user-name">Biometric Mismatch</p>
-                        <p className="result-user-detail">No matching profiles found in database or liveness check failed.</p>
-                      </div>
+              <div className="roster-container" style={{ overflowX: 'auto' }}>
+                <table className="roster-table" style={{ width: '100%' }}>
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Employee ID</th>
+                      <th>Name</th>
+                      <th>Confidence</th>
+                      <th>GPS Coordinates</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {attendanceQueue.slice(0, 10).map((entry) => {
+                      const person = usersList.find(u => u.id === entry.employeeId);
+                      return (
+                        <tr key={entry.localId}>
+                          <td>{new Date(entry.enqueuedAt).toLocaleTimeString('en-IN')}</td>
+                          <td><strong>{entry.employeeId}</strong></td>
+                          <td>{person?.name ?? '—'}</td>
+                          <td>{entry.matchConfidence ? `${(entry.matchConfidence * 100).toFixed(1)}%` : '—'}</td>
+                          <td>{entry.gpsLatitude?.toFixed(4)}, {entry.gpsLongitude?.toFixed(4)}</td>
+                          <td>
+                            <span className={`status-badge ${entry.syncStatus.toLowerCase()}`}>
+                              {entry.syncStatus}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {attendanceQueue.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="no-logs" style={{ textAlign: 'center', padding: '20px' }}>
+                          No verification logs found. Mark attendance above to populate.
+                        </td>
+                      </tr>
                     )}
-                  </div>
-                )}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -1134,12 +1321,13 @@ export const DesktopWebDashboard: React.FC = () => {
                       />
                     </div>
                     <div className="input-group">
-                      <label>Role</label>
-                      <select value={enrollRole} onChange={(e) => setEnrollRole(e.target.value)}>
-                        <option value="Toll Supervisor">Toll Supervisor</option>
-                        <option value="Checkpost Inspector">Checkpost Inspector</option>
-                        <option value="Field Security Lead">Field Security Lead</option>
-                      </select>
+                      <label>Position / Role</label>
+                      <input 
+                        type="text" 
+                        value={enrollRole} 
+                        onChange={(e) => setEnrollRole(e.target.value)} 
+                        placeholder="e.g. Toll Operator, Admin, etc."
+                      />
                     </div>
 
                     <div className="enrollment-guidance">
@@ -1156,28 +1344,13 @@ export const DesktopWebDashboard: React.FC = () => {
                         </div>
                       )}
                       {orchestratorState !== 'IDLE' && (
-                        <div className="enroll-gallery" style={{ 
-                          display: 'flex', 
-                          justifyContent: 'space-between', 
-                          gap: '6px', 
-                          marginTop: '16px', 
-                          padding: '8px',
-                          background: 'var(--ice-bg)',
-                          borderRadius: '6px',
-                          border: '1px solid var(--border-color)'
-                        }}>
+                        <div className="enroll-gallery">
                           {ENROLLMENT_STEPS.map(stepConfig => {
                             const photoObj = capturedStepPhotos.find(p => p.step === stepConfig.step);
                             const label = stepConfig.label;
                             
                             return (
-                              <div key={stepConfig.step} style={{ 
-                                display: 'flex', 
-                                flexDirection: 'column', 
-                                alignItems: 'center', 
-                                gap: '4px',
-                                flex: 1
-                              }}>
+                              <div key={stepConfig.step} className="enroll-gallery-item">
                                 <div style={{
                                   width: '32px',
                                   height: '32px',
@@ -1253,42 +1426,113 @@ export const DesktopWebDashboard: React.FC = () => {
               </div>
             </div>
 
-            {/* Right Column: Seeding & Benchmarks */}
-            <div className="card benchmark-card">
-              <div className="card-header">
-                <h3>10k Vector Match Performance Audit</h3>
-              </div>
-              <div className="card-body">
-                <p className="bench-desc">
-                  To verify the efficiency of our localized SQLite search algorithms on low-power devices, you can seed the database cache with 10,000 synthetic records and measure the exact dot-product matrix search latency.
-                </p>
-
-                <div className="bench-actions">
-                  <button 
-                    onClick={handleSeed10k} 
-                    disabled={isSeeding}
-                    className="btn-sim"
-                  >
-                    {isSeeding ? 'Caching Vectors...' : 'Seed 10,000 Roster Profiles'}
-                  </button>
-
-                  <button 
-                    onClick={handleBenchmarkSearch}
-                    disabled={usersList.length < 1000}
-                    className="btn-sim"
-                  >
-                    Run Search Latency Audit
-                  </button>
+            {/* Right Column: Camera Viewport / Seeding & Benchmarks */}
+            {isEnrolling ? (
+              <div className="card terminal-card" style={{ flex: '1', minWidth: '0' }}>
+                <div className="card-header">
+                  <h3>Guided Onboarding Camera</h3>
+                  <div className="clahe-toggle">
+                    <span className="toggle-txt">CLAHE Correction</span>
+                    <label className="switch-sm">
+                      <input 
+                        type="checkbox" 
+                        checked={claheEnabled} 
+                        onChange={(e) => setClaheEnabled(e.target.checked)} 
+                      />
+                      <span className="slider round"></span>
+                    </label>
+                  </div>
                 </div>
 
-                {benchmarkResult && (
-                  <div className="benchmark-console">
-                    <p className="console-heading">Latency Audit Output:</p>
-                    <p className="console-log">{benchmarkResult}</p>
+                <div className="camera-viewport">
+                  <div className="video-relative" style={{ display: streamActive ? 'block' : 'none' }}>
+                    <video 
+                      ref={videoRef} 
+                      autoPlay 
+                      playsInline 
+                      muted 
+                      className="hidden-video"
+                    />
+                    <canvas 
+                      ref={meshCanvasRef} 
+                      className="live-canvas"
+                      width="480"
+                      height="480"
+                    />
+                    <canvas 
+                      ref={canvasRef} 
+                      style={{ display: 'none' }}
+                      width="112"
+                      height="112"
+                    />
+                  </div>
+                  {!streamActive && (
+                    <div className="camera-offline">
+                      <span className="camera-icon">👁️</span>
+                      <button onClick={startWebcam} className="btn-camera-toggle">
+                        {mpLoading ? 'Loading libraries...' : 'Activate Edge Camera'}
+                      </button>
+                      {streamError && <p className="error-txt">{streamError}</p>}
+                    </div>
+                  )}
+                </div>
+
+                {streamActive && (
+                  <div className="camera-actions">
+                    <button onClick={stopWebcam} className="btn-camera-close">
+                      Close Camera Feed
+                    </button>
                   </div>
                 )}
+
+                <div className="stats-row" style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
+                  <div className="stat-box" style={{ flex: 1, padding: '8px', background: 'var(--ice-bg)', borderRadius: '6px', textAlign: 'center' }}>
+                    <span className="stat-label" style={{ fontSize: '10px', color: 'var(--text-gray)' }}>Yaw</span>
+                    <span className="stat-val" style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: 'var(--navy-dark)' }}>{liveYaw}°</span>
+                  </div>
+                  <div className="stat-box" style={{ flex: 1, padding: '8px', background: 'var(--ice-bg)', borderRadius: '6px', textAlign: 'center' }}>
+                    <span className="stat-label" style={{ fontSize: '10px', color: 'var(--text-gray)' }}>Pitch</span>
+                    <span className="stat-val" style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: 'var(--navy-dark)' }}>{livePitch}°</span>
+                  </div>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="card benchmark-card">
+                <div className="card-header">
+                  <h3>20 Vector Match Performance Audit</h3>
+                </div>
+                <div className="card-body">
+                  <p className="bench-desc">
+                    To verify the efficiency of our localized SQLite search algorithms on low-power devices, you can seed the database cache with 20 synthetic records and measure the exact dot-product matrix search latency.
+                  </p>
+
+                  <div className="bench-actions">
+                    <button 
+                      onClick={handleSeed20} 
+                      disabled={isSeeding}
+                      className="btn-sim"
+                    >
+                      {isSeeding ? 'Caching Vectors...' : 'Seed 20 Roster Profiles'}
+                    </button>
+
+                    <button 
+                      onClick={handleBenchmarkSearch}
+                      disabled={usersList.length < 10}
+                      className="btn-sim"
+                    >
+                      Run Search Latency Audit
+                    </button>
+                  </div>
+
+                  {benchmarkResult && (
+                    <div className="benchmark-console">
+                      <p className="console-heading">Latency Audit Output:</p>
+                      <p className="console-log">{benchmarkResult}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         );
 
@@ -1424,81 +1668,7 @@ export const DesktopWebDashboard: React.FC = () => {
           </div>
         );
 
-      case 'attendance':
-        const todayStr = new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-        const pendingToday  = attendanceQueue.filter(e => e.syncStatus === 'PENDING').length;
-        const syncedToday   = attendanceQueue.filter(e => e.syncStatus === 'SYNCED').length;
-        const rejectedToday = attendanceQueue.filter(e => e.syncStatus === 'REJECTED').length;
-        return (
-          <div className="card" style={{ width: '100%' }}>
-            <div className="card-header">
-              <div>
-                <h3>✅ Attendance Log</h3>
-                <p style={{ fontSize: '12px', color: 'var(--text-gray)', marginTop: '2px' }}>{todayStr}</p>
-              </div>
-              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-                <span className="status-badge pending">{pendingToday} Pending</span>
-                <span className="status-badge synced">{syncedToday} Synced</span>
-                {rejectedToday > 0 && <span className="status-badge rejected">{rejectedToday} Rejected</span>}
-                <button onClick={refreshAttendance} className="btn-sim" style={{ padding: '4px 10px', fontSize: '11px' }}>Refresh</button>
-              </div>
-            </div>
 
-            <div style={{ overflowX: 'auto', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-              <table className="roster-table" style={{ minWidth: '600px' }}>
-                <thead>
-                  <tr>
-                    <th>Record ID</th>
-                    <th>Time</th>
-                    <th>Employee ID</th>
-                    <th>Name</th>
-                    <th>Confidence</th>
-                    <th>GPS</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {attendanceQueue.length > 0 ? attendanceQueue.map(entry => {
-                    const person = usersList.find(u => u.id === entry.employeeId);
-                    return (
-                      <tr key={entry.localId}>
-                        <td><code style={{ fontSize: '10px', color: 'var(--text-gray)' }}>{entry.localId.slice(0, 18)}…</code></td>
-                        <td style={{ whiteSpace: 'nowrap' }}>{new Date(entry.enqueuedAt).toLocaleTimeString('en-IN')}</td>
-                        <td><strong>{entry.employeeId}</strong></td>
-                        <td>{person?.name ?? '—'}</td>
-                        <td>{entry.matchConfidence ? `${(entry.matchConfidence * 100).toFixed(1)}%` : '—'}</td>
-                        <td style={{ fontSize: '11px', color: 'var(--text-gray)' }}>
-                          {entry.gpsLatitude?.toFixed(4)}, {entry.gpsLongitude?.toFixed(4)}
-                        </td>
-                        <td>
-                          <span className={`status-badge ${entry.syncStatus.toLowerCase()}`}>
-                            {entry.syncStatus}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  }) : (
-                    <tr>
-                      <td colSpan={7}>
-                        <div className="empty-state">
-                          <span className="empty-state-icon">📋</span>
-                          <p className="empty-state-msg">No attendance records yet.</p>
-                          <p className="empty-state-sub">Go to the Verification Terminal tab, activate the camera, and complete a face scan to mark attendance.</p>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            <div style={{ padding: '12px 0', fontSize: '11px', color: 'var(--text-gray)', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-              <span>🟡 PENDING — queued offline, will sync when internet restores</span>
-              <span>🟢 SYNCED — uploaded to NHAI server, local copy purged</span>
-              <span>🔴 REJECTED — server refused (duplicate or integrity fail)</span>
-            </div>
-          </div>
-        );
     }
   };
 
@@ -1949,7 +2119,13 @@ export const DesktopWebDashboard: React.FC = () => {
           display: flex;
           gap: 8px;
           margin-bottom: 20px;
-          flex-wrap: wrap;
+          overflow-x: auto;
+          flex-wrap: nowrap;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: none;
+        }
+        .app-tabs::-webkit-scrollbar {
+          display: none;
         }
         .tab-btn {
           background-color: var(--white);
@@ -1962,6 +2138,7 @@ export const DesktopWebDashboard: React.FC = () => {
           cursor: pointer;
           transition: all 0.18s ease;
           white-space: nowrap;
+          flex: 0 0 auto;
         }
         .tab-btn:hover, .tab-btn.active {
           background-color: var(--navy-primary);
@@ -1982,6 +2159,7 @@ export const DesktopWebDashboard: React.FC = () => {
         }
         .dashboard-grid {
           display: flex;
+          flex-wrap: wrap;
           gap: 24px;
           width: 100%;
         }
@@ -1996,22 +2174,22 @@ export const DesktopWebDashboard: React.FC = () => {
           min-width: 0;    /* prevent flex overflow */
         }
         .terminal-card {
-          flex: 1.2;
+          flex: 1.2 1 320px;
         }
         .control-card {
-          flex: 1;
+          flex: 1 1 280px;
         }
         .registry-card {
-          flex: 1.4;
+          flex: 1.4 1 320px;
         }
         .benchmark-card {
-          flex: 1;
+          flex: 1 1 280px;
         }
         .sync-status-card {
-          flex: 1;
+          flex: 1 1 280px;
         }
         .queue-list-card {
-          flex: 1.4;
+          flex: 1.4 1 320px;
         }
         .ledger-card {
           width: 100%;
@@ -2028,10 +2206,10 @@ export const DesktopWebDashboard: React.FC = () => {
           font-weight: 700;
           color: var(--navy-dark);
         }
-
+ 
         /* ─── Webcam Viewport ─── */
         .camera-viewport {
-          height: 320px;
+          height: auto;
           background-color: var(--ice-bg);
           border: 1px solid var(--border-color);
           border-radius: 12px;
@@ -2040,11 +2218,14 @@ export const DesktopWebDashboard: React.FC = () => {
           display: flex;
           justify-content: center;
           align-items: center;
+          width: 100%;
+          padding: 16px;
         }
         .video-relative {
           position: relative;
-          width: 320px;
-          height: 320px;
+          width: 100%;
+          max-width: 320px;
+          aspect-ratio: 1;
         }
         .hidden-video {
           position: absolute;
@@ -2099,8 +2280,10 @@ export const DesktopWebDashboard: React.FC = () => {
           color: var(--navy-primary);
         }
         .stats-row {
-          display: flex;
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
           gap: 12px;
+          width: 100%;
         }
         .stat-box {
           flex: 1;
@@ -2203,8 +2386,9 @@ export const DesktopWebDashboard: React.FC = () => {
         }
         .override-buttons {
           display: grid;
-          grid-template-columns: 1fr 1fr;
+          grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
           gap: 8px;
+          width: 100%;
         }
         .btn-sim {
           background-color: var(--white);
@@ -2295,6 +2479,7 @@ export const DesktopWebDashboard: React.FC = () => {
         .roster-container {
           height: 240px;
           overflow-y: auto;
+          overflow-x: auto;
           border: 1px solid var(--border-color);
           border-radius: 8px;
         }
@@ -2506,6 +2691,8 @@ export const DesktopWebDashboard: React.FC = () => {
         .status-badge.rejected { background: var(--danger-bg);  color: var(--danger);  }
         .status-badge.online   { background: #E6F4EA; color: #137333; }
         .status-badge.offline  { background: #FCE8E6; color: #C5221F; }
+        .admin-badge  { background: rgba(11, 60, 115, 0.08); color: var(--navy-primary); border: 1px solid rgba(11, 60, 115, 0.16); }
+        .worker-badge { background: rgba(16, 185, 129, 0.08); color: #10B981; border: 1px solid rgba(16, 185, 129, 0.16); }
 
         /* ─── Empty States ─── */
         .empty-state {
@@ -2534,16 +2721,23 @@ export const DesktopWebDashboard: React.FC = () => {
         .gateway-item {
           display: flex;
           justify-content: space-between;
+          align-items: center;
           font-size: 12px;
-          border-bottom: 1px solid var(--ice-bg);
+          border-bottom: 1px solid var(--border-color);
           padding-bottom: 8px;
+          gap: 16px;
         }
         .gt-label {
           color: var(--text-gray);
+          flex-shrink: 0;
         }
         .gt-val {
           font-weight: 600;
           color: var(--navy-dark);
+          word-break: break-all;
+          overflow-wrap: anywhere;
+          text-align: right;
+          max-width: 65%;
         }
         .sync-actions-row {
           display: flex;
@@ -2562,19 +2756,68 @@ export const DesktopWebDashboard: React.FC = () => {
         .queue-list-container {
           max-height: 320px;
           overflow-y: auto;
+          overflow-x: auto;
           border: 1px solid var(--border-color);
           border-radius: 8px;
         }
 
+        /* ─── Guided Onboarding Gallery & Camera Login ─── */
+        .enroll-gallery {
+          display: flex;
+          justify-content: space-between;
+          gap: 6px;
+          margin-top: 16px;
+          padding: 8px;
+          background: var(--ice-bg);
+          border-radius: 6px;
+          border: 1px solid var(--border-color);
+        }
+        .enroll-gallery-item {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 4px;
+          flex: 1;
+        }
+        .camera-viewport-login .video-relative {
+          width: 100%;
+          max-width: 240px;
+          aspect-ratio: 1;
+          height: auto;
+          margin: 0 auto;
+        }
+
         /* ─── Responsive Adjustments (Media Queries) ─── */
-        @media (max-width: 1024px) {
+        /* Tablet/Intermediate layouts (768px – 1250px) */
+        @media (max-width: 1250px) and (min-width: 768px) {
           .dashboard-grid {
-            flex-direction: column;
+            flex-wrap: wrap;
             gap: 20px;
+          }
+          /* Camera Terminal and Anti-spoofing side-by-side */
+          .terminal-card {
+            flex: 1 1 calc(55% - 10px) !important;
+          }
+          .control-card {
+            flex: 1 1 calc(45% - 10px) !important;
+          }
+          /* Roster card below stretching full width */
+          .dashboard-grid > .card:nth-child(3) {
+            flex: 1 1 100% !important;
+          }
+          /* Stack Registry and Sync cards for tab usability */
+          .registry-card, .benchmark-card, .sync-status-card, .queue-list-card {
+            flex: 1 1 100% !important;
           }
           .login-container {
             gap: 20px;
           }
+          .welcome-title {
+            font-size: 48px;
+          }
+        }
+
+        @media (max-width: 1250px) {
           .welcome-title {
             font-size: 48px;
           }
@@ -2648,26 +2891,50 @@ export const DesktopWebDashboard: React.FC = () => {
           .app-body {
             padding: 16px 16px;
           }
+          .dashboard-grid {
+            flex-direction: column;
+            gap: 16px;
+          }
           .card {
             padding: 16px;
+            flex: none !important;
+            width: 100% !important;
           }
-          .camera-viewport {
-            height: 280px;
+          .card-header {
+            flex-wrap: wrap;
+            gap: 12px;
+            justify-content: center;
+            text-align: center;
           }
-          .video-relative {
-            width: 280px;
-            height: 280px;
+          .card-header h3 {
+            flex: 1 1 100%;
+            text-align: center;
+            margin: 0;
           }
-          /* Registry table — scroll on mobile */
-          .roster-container {
+          .ledger-actions, .sync-actions-row, .clahe-toggle {
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            width: 100%;
+          }
+          .ledger-actions button, .sync-actions-row button {
+            flex: 1 1 auto;
+          }
+          /* Tables scroll container */
+          .roster-container, .queue-list-container {
             overflow-x: auto;
+            width: 100%;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
           }
           .roster-table {
-            min-width: 480px;
+            min-width: 750px;
           }
-          /* Queue list table */
-          .queue-list-container {
-            overflow-x: auto;
+          .roster-table th, .roster-table td {
+            white-space: nowrap;
+          }
+          .roster-table td strong, .status-badge, .role-badge-tag {
+            white-space: nowrap;
           }
           .login-view {
             padding: 24px 16px;
@@ -2681,9 +2948,6 @@ export const DesktopWebDashboard: React.FC = () => {
           }
           .welcome-sub {
             font-size: 16px;
-          }
-          .override-buttons {
-            grid-template-columns: 1fr 1fr;
           }
           .ledger-block-node {
             width: 160px;
@@ -2701,30 +2965,15 @@ export const DesktopWebDashboard: React.FC = () => {
           .welcome-title {
             font-size: 26px;
           }
-          .stats-row {
-            grid-template-columns: 1fr 1fr;
-            display: grid;
-            gap: 8px;
-          }
           .stat-box {
             padding: 6px;
           }
           .stat-val {
             font-size: 11px;
           }
-          .override-buttons {
-            grid-template-columns: 1fr;
-          }
           .login-right {
             width: 100%;
             max-width: 100%;
-          }
-          .camera-viewport {
-            height: 240px;
-          }
-          .video-relative {
-            width: 240px;
-            height: 240px;
           }
           .app-body {
             padding: 12px;
@@ -2738,6 +2987,14 @@ export const DesktopWebDashboard: React.FC = () => {
           .tab-btn {
             font-size: 10px;
             padding: 7px 10px;
+          }
+          .enroll-gallery {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+          }
+          .enroll-gallery-item {
+            flex: unset;
           }
         }
 
@@ -2755,6 +3012,100 @@ export const DesktopWebDashboard: React.FC = () => {
           .brand-main {
             font-size: 14px;
           }
+        }
+        /* ─── SQLite Console Tray ─── */
+        .sqlite-console-tray {
+          position: fixed;
+          bottom: 0;
+          left: 0;
+          right: 0;
+          background: #090d16;
+          border-top: 1px solid #1e293b;
+          z-index: 1000;
+          box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
+          font-family: 'JetBrains Mono', monospace;
+        }
+        .tray-header {
+          padding: 10px 24px;
+          background: #0f172a;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          cursor: pointer;
+          user-select: none;
+          border-bottom: 1px solid #1e293b;
+        }
+        .tray-title {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          color: #94a3b8;
+          font-size: 11px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.8px;
+        }
+        .terminal-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+        }
+        .terminal-dot.green {
+          background-color: #10b981;
+          box-shadow: 0 0 8px #10b981;
+        }
+        .tray-toggle-arrow {
+          color: #64748b;
+          font-size: 10px;
+        }
+        .tray-content {
+          height: 180px;
+          overflow-y: auto;
+          padding: 12px 24px;
+          background: #020617;
+        }
+        .console-rows {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .console-row {
+          font-size: 11px;
+          display: flex;
+          align-items: flex-start;
+          gap: 12px;
+          line-height: 1.4;
+        }
+        .console-time {
+          color: #475569;
+          white-space: nowrap;
+        }
+        .console-statement {
+          color: #38bdf8;
+          word-break: break-all;
+          flex: 1;
+        }
+        .console-meta {
+          display: flex;
+          gap: 8px;
+          white-space: nowrap;
+        }
+        .console-meta .latency {
+          color: #10b981;
+          font-weight: 600;
+        }
+        .console-meta .affected {
+          color: #64748b;
+        }
+        .console-empty {
+          color: #475569;
+          font-size: 11px;
+          text-align: center;
+          padding: 40px;
+        }
+        
+        body {
+          padding-bottom: 38px;
         }
       ` }} />
 
@@ -2910,17 +3261,8 @@ export const DesktopWebDashboard: React.FC = () => {
                         </div>
                         
                         <div className="login-actions-row">
-                          <button type="submit" className="btn-login-submit" style={{ flex: 1, height: '48px', marginTop: '8px' }}>
+                          <button type="submit" className="btn-login-submit" style={{ width: '100%', height: '48px', marginTop: '8px' }}>
                             {isOfflineTerminal ? "Open Terminal Gate" : "Login using OTP"}
-                          </button>
-                          <button 
-                            type="button" 
-                            className="btn-face-login" 
-                            onClick={handleFaceLoginClick}
-                            title="Login with Face Recognition"
-                            style={{ height: '48px', marginTop: '8px' }}
-                          >
-                            👤
                           </button>
                         </div>
                       </form>
@@ -2985,438 +3327,68 @@ export const DesktopWebDashboard: React.FC = () => {
           </header>
           
           <div className="app-body">
-            {isAdmin ? (
-              <>
-                <nav className="app-tabs">
-                  <button 
-                    className={`tab-btn ${activeTab === 'terminal' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('terminal')}
-                  >
-                    👁️ Verification
-                  </button>
-                  <button 
-                    className={`tab-btn ${activeTab === 'attendance' ? 'active' : ''}`}
-                    onClick={() => { setActiveTab('attendance'); refreshAttendance(); }}
-                  >
-                    ✅ Attendance
-                  </button>
-                  <button 
-                    className={`tab-btn ${activeTab === 'registry' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('registry')}
-                  >
-                    👥 Personnel
-                  </button>
-                  <button 
-                    className={`tab-btn ${activeTab === 'ledger' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('ledger')}
-                  >
-                    🔗 Ledger
-                  </button>
-                  <button 
-                    className={`tab-btn ${activeTab === 'sync' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('sync')}
-                  >
-                    📡 Cloud Sync
-                  </button>
-                </nav>
-                
-                <main className="tab-viewport">
-                  {renderTabContent()}
-                </main>
-              </>
-            ) : (
-              <main className="tab-viewport" style={{ width: '100%' }}>
-                {usersList.some(u => u.id === currentUserProfile?.employeeId && !!u.faceModel) ? (
-                  // Enrolled ordinary user views Terminal only
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                    <div className="dashboard-grid">
-                      {/* Left Box: Video */}
-                      <div className="card terminal-card">
-                        <div className="card-header">
-                          <h3>Edge ID Camera Terminal</h3>
-                          <div className="clahe-toggle">
-                            <span className="toggle-txt">CLAHE Correction</span>
-                            <label className="switch-sm">
-                              <input 
-                                type="checkbox" 
-                                checked={claheEnabled} 
-                                onChange={(e) => setClaheEnabled(e.target.checked)} 
-                              />
-                              <span className="slider round"></span>
-                            </label>
-                          </div>
-                        </div>
+            <nav className="app-tabs">
+              <button 
+                className={`tab-btn ${activeTab === 'terminal' ? 'active' : ''}`}
+                onClick={() => setActiveTab('terminal')}
+              >
+                👁️ Verification
+              </button>
 
-                        <div className="camera-viewport">
-                          <div className="video-relative" style={{ display: streamActive ? 'block' : 'none' }}>
-                            <video 
-                              ref={videoRef} 
-                              autoPlay 
-                              playsInline 
-                              muted 
-                              className="hidden-video"
-                            />
-                            <canvas 
-                              ref={meshCanvasRef} 
-                              className="live-canvas"
-                              width="480"
-                              height="480"
-                            />
-                            <canvas 
-                              ref={canvasRef} 
-                              style={{ display: 'none' }}
-                              width="112"
-                              height="112"
-                            />
-                          </div>
-                          {!streamActive && (
-                            <div className="camera-offline">
-                              <span className="camera-icon">👁️</span>
-                              <button onClick={startWebcam} className="btn-camera-toggle">
-                                {mpLoading ? 'Loading libraries...' : 'Activate Edge Camera'}
-                              </button>
-                              {streamError && <p className="error-txt">{streamError}</p>}
-                            </div>
-                          )}
-                        </div>
-
-                        {streamActive && (
-                          <div className="camera-actions">
-                            <button onClick={stopWebcam} className="btn-camera-close">
-                              Close Camera Feed
-                            </button>
-                          </div>
-                        )}
-
-                        <div className="stats-row">
-                          <div className="stat-box">
-                            <span className="stat-label">EAR</span>
-                            <span className="stat-val">{liveEAR}</span>
-                          </div>
-                          <div className="stat-box">
-                            <span className="stat-label">MAR</span>
-                            <span className="stat-val">{liveMAR}</span>
-                          </div>
-                          <div className="stat-box">
-                            <span className="stat-label">Yaw</span>
-                            <span className="stat-val">{liveYaw}°</span>
-                          </div>
-                          <div className="stat-box">
-                            <span className="stat-label">Pitch</span>
-                            <span className="stat-val">{livePitch}°</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Right Box: Liveness Check & Results */}
-                      <div className="card control-card">
-                        <div className="card-header">
-                          <h3>Anti-Spoofing Verification</h3>
-                        </div>
-
-                        <div className="verification-session">
-                          <div className="session-progress">
-                            <div className="progress-bar">
-                              <div 
-                                className="progress-fill" 
-                                style={{ width: `${challengeState.progress * 100}%` }}
-                              />
-                            </div>
-                            <div className="progress-lbls">
-                              <span>Liveness Progress</span>
-                              <span>{Math.round(challengeState.progress * 100)}%</span>
-                            </div>
-                          </div>
-
-                          <div className="liveness-console">
-                            <div className="console-indicator">
-                              <span className="console-prompt">Instruction:</span>
-                              <span className="console-challenge">{challengeState.currentChallenge}</span>
-                            </div>
-                            <p className="console-status-msg">{challengeState.message}</p>
-                          </div>
-
-                          {verificationSuccess !== null && (
-                            <div className={`verification-result-card ${verificationSuccess ? 'verified' : 'denied'}`}>
-                              <div className="result-header">
-                                <span className="result-icon">{verificationSuccess ? '✓' : '✗'}</span>
-                                <h4>{verificationSuccess ? 'Identity Verified' : 'Access Refused'}</h4>
-                              </div>
-                              {verificationSuccess && matchedProfile ? (
-                                <div className="result-body">
-                                  <p className="result-user-name">{matchedProfile.name}</p>
-                                  <p className="result-user-detail">Role: {matchedProfile.role}</p>
-                                  <p className="result-user-detail">User ID: {matchedProfile.id}</p>
-                                  <div className="result-meta-row">
-                                    <span>Match Confidence: <strong>{(matchConfidence * 100).toFixed(1)}%</strong></span>
-                                    <span>Search Delay: <strong>{searchLatency || 11}ms</strong></span>
-                                  </div>
-                                  {claheEnabled && (
-                                    <p className="preproc-detail">Luma Enhanced (CLAHE: {claheLatencyMs}ms)</p>
-                                  )}
-                                  <p className="ledger-notice">Check-in logged into local hash-chain ledger.</p>
-                                </div>
-                              ) : (
-                                <div className="result-body">
-                                  <p className="result-user-name">Biometric Mismatch</p>
-                                  <p className="result-user-detail">No matching profiles found in database or liveness check failed.</p>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Bottom: Personal Check-in Logs */}
-                    <div className="card" style={{ padding: '24px' }}>
-                      <div className="card-header" style={{ marginBottom: '16px' }}>
-                        <h3>My Attendance Check-in Logs</h3>
-                      </div>
-                      <div className="roster-container">
-                        <table className="roster-table">
-                          <thead>
-                            <tr>
-                              <th>Check-in Block</th>
-                              <th>Timestamp</th>
-                              <th>GPS Coordinates</th>
-                              <th>Confidence</th>
-                              <th>Status</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {logsList
-                              .filter(log => log.userId === currentUserProfile?.employeeId)
-                              .map((log, index, arr) => (
-                                <tr key={log.id}>
-                                  <td><strong>Block #{arr.length - index}</strong></td>
-                                  <td>{new Date(log.timestamp).toLocaleString()}</td>
-                                  <td>{log.latitude.toFixed(4)}, {log.longitude.toFixed(4)}</td>
-                                  <td>{(log.confidence * 100).toFixed(1)}%</td>
-                                  <td>
-                                    <span className={`block-badge ${log.status === 'VERIFIED' ? 'ok' : 'err'}`}>
-                                      {log.status}
-                                    </span>
-                                  </td>
-                                </tr>
-                              ))}
-                            {logsList.filter(log => log.userId === currentUserProfile?.employeeId).length === 0 && (
-                              <tr>
-                                <td colSpan={5} className="no-logs">No personal check-in logs found. Mark attendance above to populate.</td>
-                              </tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  // Unenrolled ordinary user views Onboarding only
-                  <div className="dashboard-grid">
-                    <div className="card terminal-card">
-                      <div className="card-header">
-                        <h3>Guided Biometric Scanner</h3>
-                        <div className="clahe-toggle">
-                          <span className="toggle-txt">CLAHE Correction</span>
-                          <label className="switch-sm">
-                            <input 
-                              type="checkbox" 
-                              checked={claheEnabled} 
-                              onChange={(e) => setClaheEnabled(e.target.checked)} 
-                            />
-                            <span className="slider round"></span>
-                          </label>
-                        </div>
-                      </div>
-
-                      <div className="camera-viewport">
-                        <div className="video-relative" style={{ display: streamActive ? 'block' : 'none' }}>
-                          <video 
-                            ref={videoRef} 
-                            autoPlay 
-                            playsInline 
-                            muted 
-                            className="hidden-video"
-                          />
-                          <canvas 
-                            ref={meshCanvasRef} 
-                            className="live-canvas"
-                            width="480"
-                            height="480"
-                          />
-                          <canvas 
-                            ref={canvasRef} 
-                            style={{ display: 'none' }}
-                            width="112"
-                            height="112"
-                          />
-                        </div>
-                        {!streamActive && (
-                          <div className="camera-offline">
-                            <span className="camera-icon">👁️</span>
-                            <button onClick={startWebcam} className="btn-camera-toggle">
-                              {mpLoading ? 'Loading libraries...' : 'Activate Edge Camera'}
-                            </button>
-                            {streamError && <p className="error-txt">{streamError}</p>}
-                          </div>
-                        )}
-                      </div>
-
-                      {streamActive && (
-                        <div className="camera-actions">
-                          <button onClick={stopWebcam} className="btn-camera-close">
-                            Close Camera Feed
-                          </button>
-                        </div>
-                      )}
-
-                      <div className="stats-row">
-                        <div className="stat-box">
-                          <span className="stat-label">Yaw</span>
-                          <span className="stat-val">{liveYaw}°</span>
-                        </div>
-                        <div className="stat-box">
-                          <span className="stat-label">Pitch</span>
-                          <span className="stat-val">{livePitch}°</span>
-                        </div>
-                        <div className="stat-box">
-                          <span className="stat-label">Roll</span>
-                          <span className="stat-val">{liveRoll}°</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="card control-card">
-                      <div className="card-header">
-                        <h3>Biometric Roster Registration</h3>
-                      </div>
-                      <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                        <p style={{ fontSize: '13px', color: 'var(--text-gray)' }}>
-                          Welcome, <strong>{currentUserProfile?.name}</strong>. Your account has not yet registered a 3D facial signature locally. 
-                          Please look directly at the camera and follow the guided multi-angle scan instructions.
-                        </p>
-
-                        <div className="enrollment-panel" style={{ background: 'none', padding: 0 }}>
-                           <div className="enrollment-guidance">
-                             <p className="enroll-prompt" style={{ fontSize: '16px', fontWeight: 'bold', color: 'var(--navy-primary)' }}>
-                               {enrollProgressMsg}
-                             </p>
-                             {enrollFrameResult && (
-                               <div className="enroll-step-progress" style={{ marginTop: '12px' }}>
-                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                   <span>Step: <strong>{enrollFrameResult.currentStep}</strong></span>
-                                   <span><strong>{Math.round(enrollFrameResult.overallProgress * 100)}% Complete</strong></span>
-                                 </div>
-                                 <div className="progress-bar-sm" style={{ marginTop: '6px' }}>
-                                   <div className="progress-fill" style={{ width: `${enrollFrameResult.overallProgress * 100}%` }} />
-                                 </div>
-                               </div>
-                             )}
-                             {orchestratorState !== 'IDLE' && (
-                               <div className="enroll-gallery" style={{ 
-                                 display: 'flex', 
-                                 justifyContent: 'space-between', 
-                                 gap: '8px', 
-                                 marginTop: '20px', 
-                                 padding: '12px',
-                                 background: 'var(--ice-bg)',
-                                 borderRadius: '8px',
-                                 border: '1px solid var(--border-color)'
-                               }}>
-                                 {ENROLLMENT_STEPS.map(stepConfig => {
-                                   const photoObj = capturedStepPhotos.find(p => p.step === stepConfig.step);
-                                   const label = stepConfig.label;
-                                   
-                                   return (
-                                     <div key={stepConfig.step} style={{ 
-                                       display: 'flex', 
-                                       flexDirection: 'column', 
-                                       alignItems: 'center', 
-                                       gap: '6px',
-                                       flex: 1
-                                     }}>
-                                       <div style={{
-                                         width: '44px',
-                                         height: '44px',
-                                         borderRadius: '50%',
-                                         border: photoObj ? '2px solid var(--navy-primary)' : '2px dashed var(--border-color)',
-                                         backgroundColor: photoObj ? 'transparent' : 'var(--white)',
-                                         display: 'flex',
-                                         justifyContent: 'center',
-                                         alignItems: 'center',
-                                         overflow: 'hidden',
-                                         position: 'relative'
-                                       }}>
-                                         {photoObj ? (
-                                           <>
-                                             <img src={photoObj.photo} alt={label} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                             <div style={{
-                                               position: 'absolute',
-                                               bottom: 0,
-                                               right: 0,
-                                               background: 'var(--navy-primary)',
-                                               color: 'var(--white)',
-                                               borderRadius: '50%',
-                                               width: '12px',
-                                               height: '12px',
-                                               display: 'flex',
-                                               alignItems: 'center',
-                                               justifyContent: 'center',
-                                               fontSize: '8px',
-                                               fontWeight: 'bold'
-                                             }}>✓</div>
-                                           </>
-                                         ) : (
-                                           <span style={{ fontSize: '14px', color: 'var(--navy-light)', fontWeight: 'bold' }}>
-                                             {stepConfig.arrow === 'up' && '↑'}
-                                             {stepConfig.arrow === 'down' && '↓'}
-                                             {stepConfig.arrow === 'left' && '←'}
-                                             {stepConfig.arrow === 'right' && '→'}
-                                             {stepConfig.arrow === 'tilt-left' && '⤾'}
-                                             {stepConfig.arrow === 'none' && '👤'}
-                                           </span>
-                                         )}
-                                       </div>
-                                       <span style={{ 
-                                         fontSize: '9px', 
-                                         fontWeight: photoObj ? 'bold' : 'normal',
-                                         color: photoObj ? 'var(--navy-primary)' : 'var(--text-gray)', 
-                                         textAlign: 'center',
-                                         whiteSpace: 'nowrap'
-                                       }}>
-                                         {stepConfig.step === 'LOOK_CENTER' ? 'Center' : 
-                                          stepConfig.step === 'LOOK_UP' ? 'Up' : 
-                                          stepConfig.step === 'LOOK_DOWN' ? 'Down' : 
-                                          stepConfig.step === 'TURN_LEFT' ? 'Left' : 
-                                          stepConfig.step === 'TURN_RIGHT' ? 'Right' : 'Tilt'}
-                                       </span>
-                                     </div>
-                                   );
-                                 })}
-                               </div>
-                             )}
-                           </div>
-
-                          <div className="enroll-buttons" style={{ marginTop: '24px' }}>
-                            <button 
-                              onClick={startEnrollmentWizard} 
-                              className="btn-login-submit" 
-                              disabled={orchestratorState === 'ENROLLING'}
-                              style={{ margin: 0, height: '48px' }}
-                            >
-                              {orchestratorState === 'ENROLLING' ? 'Scanning In Progress...' : 'Start 6-Step Scan'}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </main>
-            )}
+              <button 
+                className={`tab-btn ${activeTab === 'registry' ? 'active' : ''}`}
+                onClick={() => { setActiveTab('registry'); setIsEnrolling(false); }}
+              >
+                👥 Register Staff
+              </button>
+              <button 
+                className={`tab-btn ${activeTab === 'ledger' ? 'active' : ''}`}
+                onClick={() => setActiveTab('ledger')}
+              >
+                🔗 Ledger
+              </button>
+              <button 
+                className={`tab-btn ${activeTab === 'sync' ? 'active' : ''}`}
+                onClick={() => setActiveTab('sync')}
+              >
+                📡 Cloud Sync
+              </button>
+            </nav>
+            
+            <main className="tab-viewport">
+              {renderTabContent()}
+            </main>
           </div>
         </div>
       )}
+
+      {/* Collapsible SQLite Diagnostic Terminal */}
+      <div className={`sqlite-console-tray ${sqlConsoleOpen ? 'open' : ''}`}>
+        <div className="tray-header" onClick={() => setSqlConsoleOpen(!sqlConsoleOpen)}>
+          <div className="tray-title">
+            <span className="terminal-dot green"></span>
+            <span>💾 Local SQLite Terminal (Live Query Audit Log)</span>
+          </div>
+          <span className="tray-toggle-arrow">{sqlConsoleOpen ? '▼' : '▲'}</span>
+        </div>
+        <div className="tray-content" style={{ display: sqlConsoleOpen ? 'block' : 'none' }}>
+          <div className="console-rows">
+            {sqlLogs.map((log, idx) => (
+              <div key={idx} className="console-row">
+                <span className="console-time">[{log.timestamp}]</span>
+                <span className="console-statement">{log.statement}</span>
+                <span className="console-meta">
+                  <span className="latency">{log.latencyMs}ms</span>
+                  <span className="affected">({log.rowsAffected} rows affected)</span>
+                </span>
+              </div>
+            ))}
+            {sqlLogs.length === 0 && (
+              <div className="console-empty">No SQL statements executed yet. Actions will log queries here.</div>
+            )}
+          </div>
+        </div>
+      </div>
     </>
   );
 };

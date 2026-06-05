@@ -35,7 +35,7 @@ export const ENROLLMENT_STEPS: EnrollmentStepConfig[] = [
     arrow: 'none',
     requiredFrames: 20,
     poseCheck: (yaw, pitch, roll) =>
-      Math.abs(yaw) < 10 && Math.abs(pitch) < 10 && Math.abs(roll) < 8,
+      Math.abs(yaw) < 18 && Math.abs(pitch) < 18 && Math.abs(roll) < 15,
   },
   {
     step: 'LOOK_UP',
@@ -127,7 +127,13 @@ export class LivenessMathService {
   private hasSmiled = false;
   private hasTurnedLeft = false;
   private hasTurnedRight = false;
+  private challengeStableFrames = 0;
   private activeChallenge: LivenessChallenge | null = null;
+
+  // Grace period: give users time to read the challenge instruction
+  // ~90 frames at 30fps ≈ 3 seconds before evaluating
+  private challengeGraceFrames = 0;
+  private readonly CHALLENGE_GRACE_LIMIT = 90;
 
   // ─── Enrollment state ──────────────────────────────────────────────────────
   private enrollmentStepIdx = 0;
@@ -189,6 +195,8 @@ export class LivenessMathService {
     this.hasSmiled = false;
     this.hasTurnedLeft = false;
     this.hasTurnedRight = false;
+    this.challengeStableFrames = 0;
+    this.challengeGraceFrames = 0;
     this.activeChallenge = null;
   }
 
@@ -203,6 +211,8 @@ export class LivenessMathService {
     this.hasSmiled = false;
     this.hasTurnedLeft = false;
     this.hasTurnedRight = false;
+    this.challengeStableFrames = 0;
+    this.challengeGraceFrames = 0;
   }
 
   /**
@@ -438,6 +448,26 @@ export class LivenessMathService {
         progress: this.calibrationFrames / this.calibrationLimit,
         isCalibrated: false,
         message: 'Calibrating system... Keep eyes open',
+        metrics,
+      };
+    }
+
+    // Grace period: let the user read the challenge instruction before evaluating
+    if (this.challengeGraceFrames < this.CHALLENGE_GRACE_LIMIT) {
+      this.challengeGraceFrames++;
+      const secondsLeft = Math.ceil((this.CHALLENGE_GRACE_LIMIT - this.challengeGraceFrames) / 30);
+      const challengeLabels: Record<string, string> = {
+        'BLINK': 'blink your eyes',
+        'SMILE': 'smile clearly',
+        'TURN_LEFT': 'turn your head left',
+        'TURN_RIGHT': 'turn your head right',
+      };
+      const actionLabel = challengeLabels[activeChallenge] || activeChallenge;
+      return {
+        currentChallenge: activeChallenge,
+        progress: 0,
+        isCalibrated: true,
+        message: `Get ready to ${actionLabel}... (${secondsLeft}s)`,
         metrics,
       };
     }

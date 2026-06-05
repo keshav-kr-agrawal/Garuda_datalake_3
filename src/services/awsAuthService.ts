@@ -33,6 +33,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CryptographicLedgerService } from './cryptographicLedger';
+import { LocalDatabaseService } from './databaseSchema';
 
 // ─── AWS Configuration ────────────────────────────────────────────────────────
 // Replace these with your actual Cognito pool values from the AWS Console.
@@ -322,28 +323,48 @@ export class AWSAuthService {
     // Simulated 300ms network round trip
     await new Promise(r => setTimeout(r, 300));
 
-    const MOCK_USERS: Record<string, { password: string; role: string; employeeId: string }> = {
-      'NHAI-2026-001': { password: 'Nhai@2026', role: 'Toll Supervisor',      employeeId: 'NHAI-2026-001' },
-      'NHAI-2026-002': { password: 'Nhai@2026', role: 'Checkpost Inspector',   employeeId: 'NHAI-2026-002' },
-      'NHAI-2026-003': { password: 'Nhai@2026', role: 'Field Security Lead',   employeeId: 'NHAI-2026-003' },
-      'admin':          { password: 'Admin@2026', role: 'System Administrator', employeeId: 'ADMIN-001'     },
-    };
+    let role = '';
+    let employeeId = '';
 
-    const user = MOCK_USERS[username];
-    if (!user || user.password !== password) {
-      return {
-        success: false,
-        errorCode: 'INVALID_CREDENTIALS',
-        message: 'Username or password is incorrect. Check your Cognito credentials.',
-      };
+    if (username === 'admin') {
+      if (password !== 'Admin@2026') {
+        return {
+          success: false,
+          errorCode: 'INVALID_CREDENTIALS',
+          message: 'Username or password is incorrect. Check your Cognito credentials.',
+        };
+      }
+      role = 'System Administrator';
+      employeeId = 'ADMIN-001';
+    } else {
+      // Look up enrolled users in SQLite database
+      const db = LocalDatabaseService.getInstance();
+      const users = await db.getEnrolledUsers();
+      const user = users.find(u => u.id === username);
+      if (!user) {
+        return {
+          success: false,
+          errorCode: 'INVALID_CREDENTIALS',
+          message: 'Username or password is incorrect. Check your Cognito credentials.',
+        };
+      }
+      if (password !== '' && password !== 'Nhai@2026') {
+        return {
+          success: false,
+          errorCode: 'INVALID_CREDENTIALS',
+          message: 'Username or password is incorrect. Check your Cognito credentials.',
+        };
+      }
+      role = user.role;
+      employeeId = user.id;
     }
 
     // Mock JWT structure mirrors real Cognito token claims
     const now = Date.now();
     const mockIdToken = this._buildMockJWT({
-      sub:              user.employeeId,
+      sub:              employeeId,
       'cognito:username': username,
-      'custom:role':    user.role,
+      'custom:role':    role,
       'custom:region':  'DELHI-NCR',
       iss:              `https://cognito-idp.${AWS_CONFIG.REGION}.amazonaws.com/${AWS_CONFIG.COGNITO_USER_POOL_ID}`,
       aud:              AWS_CONFIG.COGNITO_CLIENT_ID,

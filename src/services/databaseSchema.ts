@@ -22,6 +22,7 @@ export interface EnrolledUser {
     /** Incremented each time the user re-enrolls */
     version: number;
   };
+  syncStatus?: 'PENDING' | 'SYNCED';
 }
 
 export interface AuditLog {
@@ -57,50 +58,35 @@ export class LocalDatabaseService {
    */
   public async getEnrolledUsers(): Promise<EnrolledUser[]> {
     if (this.usersCache) return this.usersCache;
-    try {
-      const data = await storage.getItem(USERS_KEY);
-      this.usersCache = data ? JSON.parse(data) : [];
-      return this.usersCache!;
-    } catch (e) {
-      console.error('[LocalDatabase] Error getting users:', e);
-      return [];
-    }
+    const data = await storage.getItem(USERS_KEY);
+    this.usersCache = data ? JSON.parse(data) : [];
+    return this.usersCache!;
   }
 
   /**
    * Save/Enroll a new user locally (invalidates and updates in-memory cache)
    */
   public async enrollUser(user: EnrolledUser): Promise<boolean> {
-    try {
-      const users = await this.getEnrolledUsers();
-      // Remove duplicates if any
-      const updated = users.filter(u => u.id !== user.id);
-      updated.push(user);
-      await storage.setItem(USERS_KEY, JSON.stringify(updated));
-      this.usersCache = updated; // Update cache!
-      console.log(`[LocalDatabase] Successfully enrolled user: ${user.name} (${user.id})`);
-      return true;
-    } catch (e) {
-      console.error('[LocalDatabase] Error enrolling user:', e);
-      return false;
-    }
+    const users = await this.getEnrolledUsers();
+    // Remove duplicates if any
+    const updated = users.filter(u => u.id !== user.id);
+    updated.push(user);
+    await storage.setItem(USERS_KEY, JSON.stringify(updated));
+    this.usersCache = updated; // Update cache!
+    console.log(`[LocalDatabase] Successfully enrolled user: ${user.name} (${user.id})`);
+    return true;
   }
 
   /**
    * Delete / Purge an enrolled user profile
    */
   public async deleteUser(userId: string): Promise<boolean> {
-    try {
-      const users = await this.getEnrolledUsers();
-      const updated = users.filter(u => u.id !== userId);
-      await storage.setItem(USERS_KEY, JSON.stringify(updated));
-      this.usersCache = updated;
-      console.log(`[LocalDatabase] Successfully deleted user: ${userId}`);
-      return true;
-    } catch (e) {
-      console.error('[LocalDatabase] Error deleting user:', e);
-      return false;
-    }
+    const users = await this.getEnrolledUsers();
+    const updated = users.filter(u => u.id !== userId);
+    await storage.setItem(USERS_KEY, JSON.stringify(updated));
+    this.usersCache = updated;
+    console.log(`[LocalDatabase] Successfully deleted user: ${userId}`);
+    return true;
   }
 
   /**
@@ -190,44 +176,22 @@ export class LocalDatabaseService {
   }
 
   /**
-   * Seeds 10,000 dynamic mock personnel vectors for performance benchmark verification.
+   * Seeds 20 dynamic mock personnel vectors for performance benchmark verification.
    */
-  public async seed10kDatabase(): Promise<void> {
-    console.log('[LocalDatabase] Seeding 10,000 mock personnel profiles inside local database cache...');
+  public async seed20Database(): Promise<void> {
+    console.log('[LocalDatabase] Seeding 20 mock personnel profiles inside local database cache...');
     const bulkUsers: EnrolledUser[] = [];
-    
-    // Seed our standard 3 core demo users first (fully L2-normalized)
-    bulkUsers.push(
-      {
-        id: 'NHAI-2026-001',
-        name: 'Keshav Kumar Agrawal',
-        role: 'Toll Supervisor',
-        embedding: this.l2NormalizeVector(Array.from({ length: 192 }, (_, i) => Math.sin(i) * Math.cos(i * 1.5)))
-      },
-      {
-        id: 'NHAI-2026-002',
-        name: 'Harshiya Sharma',
-        role: 'Checkpost Inspector',
-        embedding: this.l2NormalizeVector(Array.from({ length: 192 }, (_, i) => Math.sin(i + 1) * Math.cos(i * 2.3)))
-      },
-      {
-        id: 'NHAI-2026-003',
-        name: 'Anurag Mohapatra',
-        role: 'Field Security Lead',
-        embedding: this.l2NormalizeVector(Array.from({ length: 192 }, (_, i) => Math.sin(i + 2) * Math.cos(i * 0.9)))
-      }
-    );
 
-    // Generate 9,997 randomized, normalized personnel vectors
-    for (let idx = 4; idx <= 10000; idx++) {
-      const id = `NHAI-MOCK-${10000 + idx}`;
+    // Generate 20 randomized, normalized personnel vectors
+    for (let idx = 1; idx <= 20; idx++) {
+      const id = `NHAI-MOCK-${idx}`;
       const name = `Field Operator ${idx}`;
       const role = idx % 2 === 0 ? 'Toll Operator' : 'Security Guard';
 
       // Deterministic generation to avoid slow Math.random() loops
-      const rawVector = new Float32Array(192);
+      const rawVector = new Float32Array(128);
       let sumSquares = 0;
-      for (let j = 0; j < 192; j++) {
+      for (let j = 0; j < 128; j++) {
         rawVector[j] = Math.sin(idx * 0.72 + j) * Math.cos(j * 0.95);
         sumSquares += rawVector[j] * rawVector[j];
       }
@@ -240,42 +204,22 @@ export class LocalDatabaseService {
 
     await storage.setItem(USERS_KEY, JSON.stringify(bulkUsers));
     this.usersCache = bulkUsers;
-    console.log('[LocalDatabase] Successfully seeded and cached 10,000 personnel profiles!');
+    console.log('[LocalDatabase] Successfully seeded and cached 20 personnel profiles!');
   }
 
-  /**
-   * Bulk enroll pre-registered users on startup if empty (seeding Indian transit corridor roster)
-   */
   public async seedDatabaseIfEmpty(): Promise<void> {
     const users = await this.getEnrolledUsers();
-    if (users.length === 0) {
-      console.log('[LocalDatabase] Seeding mock personnel vectors for hackathon demonstration...');
-      
-      // Generate some deterministic mock personnel embeddings (fully L2-normalized)
-      const seedUsers: EnrolledUser[] = [
-        {
-          id: 'NHAI-2026-001',
-          name: 'Keshav Kumar Agrawal',
-          role: 'Toll Supervisor',
-          embedding: this.l2NormalizeVector(Array.from({ length: 192 }, (_, i) => Math.sin(i) * Math.cos(i * 1.5)))
-        },
-        {
-          id: 'NHAI-2026-002',
-          name: 'Harshiya Sharma',
-          role: 'Checkpost Inspector',
-          embedding: this.l2NormalizeVector(Array.from({ length: 192 }, (_, i) => Math.sin(i + 1) * Math.cos(i * 2.3)))
-        },
-        {
-          id: 'NHAI-2026-003',
-          name: 'Anurag Mohapatra',
-          role: 'Field Security Lead',
-          embedding: this.l2NormalizeVector(Array.from({ length: 192 }, (_, i) => Math.sin(i + 2) * Math.cos(i * 0.9)))
-        }
-      ];
-
-      for (const u of seedUsers) {
-        await this.enrollUser(u);
-      }
+    // Filter out mock and hardcoded demo profiles
+    const filtered = users.filter(
+      u => !u.id.includes('MOCK') &&
+           u.id !== 'NHAI-2026-001' &&
+           u.id !== 'NHAI-2026-002' &&
+           u.id !== 'NHAI-2026-003'
+    );
+    if (filtered.length !== users.length) {
+      await storage.setItem(USERS_KEY, JSON.stringify(filtered));
+      this.usersCache = filtered;
+      console.log('[LocalDatabase] Cleared hardcoded mock profiles from database.');
     }
   }
 
@@ -283,40 +227,25 @@ export class LocalDatabaseService {
    * Retrieve all audit logs in the local blockchain ledger
    */
   public async getLedger(): Promise<AuditLog[]> {
-    try {
-      const data = await storage.getItem(LEDGER_KEY);
-      return data ? JSON.parse(data) : [];
-    } catch (e) {
-      console.error('[LocalDatabase] Error getting ledger:', e);
-      return [];
-    }
+    const data = await storage.getItem(LEDGER_KEY);
+    return data ? JSON.parse(data) : [];
   }
 
   /**
    * Append a validated transaction to the local ledger
    */
   public async appendLedgerBlock(block: AuditLog): Promise<boolean> {
-    try {
-      const ledger = await this.getLedger();
-      ledger.push(block);
-      await storage.setItem(LEDGER_KEY, JSON.stringify(ledger));
-      return true;
-    } catch (e) {
-      console.error('[LocalDatabase] Error appending ledger block:', e);
-      return false;
-    }
+    const ledger = await this.getLedger();
+    ledger.push(block);
+    await storage.setItem(LEDGER_KEY, JSON.stringify(ledger));
+    return true;
   }
 
   /**
    * Re-write or clean the ledger (e.g. after sync-and-purge)
    */
   public async saveLedger(ledger: AuditLog[]): Promise<boolean> {
-    try {
-      await storage.setItem(LEDGER_KEY, JSON.stringify(ledger));
-      return true;
-    } catch (e) {
-      console.error('[LocalDatabase] Error saving ledger:', e);
-      return false;
-    }
+    await storage.setItem(LEDGER_KEY, JSON.stringify(ledger));
+    return true;
   }
 }

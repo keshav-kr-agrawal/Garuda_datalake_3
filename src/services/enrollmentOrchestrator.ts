@@ -211,7 +211,10 @@ export class EnrollmentOrchestratorService {
         },
       };
 
-      const success = await this.db.enrollUser(newUser);
+      const { DatalakeApiService } = await import('./datalakeApiService');
+      const syncService = DatalakeApiService.getInstance();
+      const regResult = await syncService.registerUser(newUser);
+      const success = regResult.success;
 
       if (success) {
         // Optionally store thumbnail
