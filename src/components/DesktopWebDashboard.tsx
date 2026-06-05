@@ -646,11 +646,13 @@ export const DesktopWebDashboard: React.FC = () => {
 
       const isUserMatch = (loginWithFaceActive || isAdmin || isCommonTerminal) ? !!matchResult.user : (matchResult.user && matchResult.user.id === currentUserProfile?.employeeId);
 
-      if (isUserMatch && matchResult.similarity >= 0.72) {
+      const threshold = embedderService.getSimilarityThreshold();
+
+      if (isUserMatch && matchResult.similarity >= threshold) {
         const matchedUser = matchResult.user!;
         setMatchedProfile(matchedUser);
         
-        const scaledSim = 0.95 + ((matchResult.similarity - 0.72) / (1.0 - 0.72)) * 0.05;
+        const scaledSim = 0.95 + ((matchResult.similarity - threshold) / (1.0 - threshold)) * 0.05;
         setMatchConfidence(scaledSim);
 
         // Queue log entry offline via Datalake API
@@ -728,7 +730,7 @@ export const DesktopWebDashboard: React.FC = () => {
           failMsg = 'No enrolled faces in database. Register a face first via the Registry tab.';
         } else if (!matchResult.user) {
           failMsg = `No matching face found among ${enrolledCount} enrolled profile(s). Similarity: ${(matchResult.similarity * 100).toFixed(1)}%`;
-        } else if (matchResult.similarity < 0.72) {
+        } else if (matchResult.similarity < threshold) {
           failMsg = `Weak match (${(matchResult.similarity * 100).toFixed(1)}%). Try better lighting or re-enroll.`;
         } else {
           failMsg = `Face matched ${matchResult.user.name} but access restricted to your profile only.`;
