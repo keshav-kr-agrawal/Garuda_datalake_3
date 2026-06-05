@@ -53,14 +53,40 @@ export class LocalDatabaseService {
     return LocalDatabaseService.instance;
   }
 
+  private preConvertUsers(users: EnrolledUser[]): EnrolledUser[] {
+    for (let i = 0; i < users.length; i++) {
+      const u = users[i] as any;
+      if (u.embedding && !u._floatEmbedding) {
+        u._floatEmbedding = new Float32Array(u.embedding);
+      }
+      if (u.faceModel && !u._faceMeshModel) {
+        u._faceMeshModel = {
+          userId: u.id,
+          masterEmbedding: new Float32Array(u.faceModel.masterEmbedding),
+          angleEmbeddings: u.faceModel.angleEmbeddings.map((a: any) => ({
+            step: a.step,
+            embedding: new Float32Array(a.embedding),
+          })),
+        };
+      } else if (!u.faceModel && !u._faceMeshModel) {
+        u._faceMeshModel = {
+          userId: u.id,
+          masterEmbedding: new Float32Array(u.embedding),
+        };
+      }
+    }
+    return users;
+  }
+
   /**
    * Fetch all locally enrolled users (caches in memory for high-performance sub-ms access)
    */
   public async getEnrolledUsers(): Promise<EnrolledUser[]> {
     if (this.usersCache) return this.usersCache;
     const data = await storage.getItem(USERS_KEY);
-    this.usersCache = data ? JSON.parse(data) : [];
-    return this.usersCache!;
+    const parsed = data ? JSON.parse(data) : [];
+    this.usersCache = this.preConvertUsers(parsed);
+    return this.usersCache;
   }
 
   /**
@@ -72,7 +98,7 @@ export class LocalDatabaseService {
     const updated = users.filter(u => u.id !== user.id);
     updated.push(user);
     await storage.setItem(USERS_KEY, JSON.stringify(updated));
-    this.usersCache = updated; // Update cache!
+    this.usersCache = this.preConvertUsers(updated); // Update cache!
     console.log(`[LocalDatabase] Successfully enrolled user: ${user.name} (${user.id})`);
     return true;
   }
@@ -84,7 +110,7 @@ export class LocalDatabaseService {
     const users = await this.getEnrolledUsers();
     const updated = users.filter(u => u.id !== userId);
     await storage.setItem(USERS_KEY, JSON.stringify(updated));
-    this.usersCache = updated;
+    this.usersCache = this.preConvertUsers(updated);
     console.log(`[LocalDatabase] Successfully deleted user: ${userId}`);
     return true;
   }
@@ -100,8 +126,8 @@ export class LocalDatabaseService {
     const qLen = queryEmbedding.length;
 
     for (let i = 0; i < users.length; i++) {
-      const user = users[i];
-      const dbEmbedding = user.embedding;
+      const user = users[i] as any;
+      const dbEmbedding = user._floatEmbedding || (user._floatEmbedding = new Float32Array(user.embedding));
       const dbLen = dbEmbedding.length;
       const len = qLen < dbLen ? qLen : dbLen;
 
@@ -137,23 +163,7 @@ export class LocalDatabaseService {
     const embedder = FaceEmbedderService.getInstance();
 
     // Build the model list for detectFace()
-    const models = users.map(u => {
-      if (u.faceModel) {
-        return {
-          userId: u.id,
-          masterEmbedding: new Float32Array(u.faceModel.masterEmbedding),
-          angleEmbeddings: u.faceModel.angleEmbeddings.map(a => ({
-            step: a.step,
-            embedding: new Float32Array(a.embedding),
-          })),
-        };
-      }
-      // Fallback: use flat embedding as master
-      return {
-        userId: u.id,
-        masterEmbedding: new Float32Array(u.embedding),
-      };
-    });
+    const models = users.map(u => (u as any)._faceMeshModel);
 
     const detection = embedder.detectFace(queryEmbedding, models);
     const matchedUser = users.find(u => u.id === detection.userId) ?? null;
@@ -203,7 +213,7 @@ export class LocalDatabaseService {
     }
 
     await storage.setItem(USERS_KEY, JSON.stringify(bulkUsers));
-    this.usersCache = bulkUsers;
+    this.usersCache = this.preConvertUsers(bulkUsers);
     console.log('[LocalDatabase] Successfully seeded and cached 20 personnel profiles!');
   }
 
@@ -253,7 +263,7 @@ export class LocalDatabaseService {
     }
 
     await storage.setItem(USERS_KEY, JSON.stringify(bulkUsers));
-    this.usersCache = bulkUsers;
+    this.usersCache = this.preConvertUsers(bulkUsers);
     console.log('[LocalDatabase] Successfully seeded and cached 10,000 personnel profiles!');
   }
 
@@ -268,7 +278,7 @@ export class LocalDatabaseService {
     );
     if (filtered.length !== users.length) {
       await storage.setItem(USERS_KEY, JSON.stringify(filtered));
-      this.usersCache = filtered;
+      this.usersCache = this.preConvertUsers(filtered);
       console.log('[LocalDatabase] Cleared hardcoded mock profiles from database.');
     }
   }

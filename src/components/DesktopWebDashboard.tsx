@@ -35,6 +35,28 @@ export const DesktopWebDashboard: React.FC = () => {
   // Navigation tabs
   const [activeTab, setActiveTab] = useState<'terminal' | 'registry' | 'ledger' | 'sync'>('terminal');
 
+  // Staff and Admin flow states
+  const [attendanceMarkedToday, setAttendanceMarkedToday] = useState(false);
+  const [selectedEnrollIdOption, setSelectedEnrollIdOption] = useState('NHAI-2026-001');
+  const [enrollCustomId, setEnrollCustomId] = useState('');
+
+  useEffect(() => {
+    if (selectedEnrollIdOption === 'NHAI-2026-001') {
+      setEnrollName('Keshav Kumar Agrawal');
+      setEnrollRole('Toll Supervisor');
+    } else if (selectedEnrollIdOption === 'NHAI-2026-002') {
+      setEnrollName('Harshiya Sharma');
+      setEnrollRole('Checkpost Inspector');
+    } else if (selectedEnrollIdOption === 'NHAI-2026-003') {
+      setEnrollName('Anurag Mohapatra');
+      setEnrollRole('Field Security Lead');
+    } else {
+      setEnrollName('');
+      setEnrollRole('Toll Supervisor');
+      setEnrollCustomId('');
+    }
+  }, [selectedEnrollIdOption]);
+
   // GPS coordinates state
   const [gpsLocation, setGpsLocation] = useState<{ latitude: number; longitude: number; accuracy: number }>({
     latitude: 28.6139,
@@ -84,6 +106,11 @@ export const DesktopWebDashboard: React.FC = () => {
   const [matchConfidence, setMatchConfidence] = useState(0);
   const [verificationSuccess, setVerificationSuccess] = useState<boolean | null>(null);
 
+  const [rosterFilter, setRosterFilter] = useState<'ALL' | 'PRESENT' | 'ABSENT'>('ALL');
+  const [verificationStep, setVerificationStep] = useState<'IDLE' | 'MATCHING' | 'LIVENESS' | 'SUCCESS' | 'FAILED'>('IDLE');
+  const verificationStepRef = useRef<'IDLE' | 'MATCHING' | 'LIVENESS' | 'SUCCESS' | 'FAILED'>('IDLE');
+  const isMatchingInProgressRef = useRef(false);
+
   // Registry & Roster
   const [usersList, setUsersList] = useState<EnrolledUser[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -108,6 +135,12 @@ export const DesktopWebDashboard: React.FC = () => {
   // SQLite Terminal Diagnostic logs
   const [sqlConsoleOpen, setSqlConsoleOpen] = useState(false);
   const [sqlLogs, setSqlLogs] = useState<SqlLogEntry[]>([]);
+
+  // Computed state properties for role enrollment status
+  const adminEnrolled = usersList.some(u => u.id === 'admin');
+  const forceAdminEnroll = isAdmin && !adminEnrolled;
+  const isCommonTerminal = currentUserProfile?.employeeId === 'NHAI-USER-001';
+  const staffEnrolled = !isAdmin && (isCommonTerminal || usersList.some(u => u.id === currentUserProfile?.employeeId));
 
   // Timing references
   const pipelineStartTimeRef = useRef<number | null>(null);
@@ -166,6 +199,8 @@ export const DesktopWebDashboard: React.FC = () => {
       if (profile) {
         setCurrentUserProfile(profile);
         setIsLoggedIn(true);
+        const attStatus = await datalakeSyncService.getTodayAttendanceStatus();
+        setAttendanceMarkedToday(attStatus.isMarked);
       }
       await refreshUsers();
       await refreshLogs();
@@ -248,7 +283,6 @@ export const DesktopWebDashboard: React.FC = () => {
     return () => clearInterval(interval);
   }, [streamActive, activeChallengeIdx, challengeState.currentChallenge, challengeState.isCalibrated, challengeState.progress]);
 
-  // Authenticate Handlers
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -257,21 +291,17 @@ export const DesktopWebDashboard: React.FC = () => {
         const profile = datalakeSyncService.getCurrentProfile();
         setCurrentUserProfile(profile);
         setIsLoggedIn(true);
+        
+        const attStatus = await datalakeSyncService.getTodayAttendanceStatus();
+        setAttendanceMarkedToday(attStatus.isMarked);
+
         const adminUser = profile?.role === 'System Administrator' || profile?.employeeId === 'admin';
         if (adminUser) {
           setActiveTab('registry');
           setIsEnrolling(false);
         } else {
-          const users = await dbService.getEnrolledUsers();
-          const enrolled = users.some(u => u.id === profile?.employeeId);
-          if (enrolled) {
-            setIsEnrolling(false);
-            setActiveTab('terminal');
-          } else {
-            setIsEnrolling(true);
-            setEnrollName(profile?.name || '');
-            setEnrollRole(profile?.role || 'Toll Operator');
-          }
+          setIsEnrolling(false);
+          setActiveTab('terminal');
         }
       } else {
         alert(authResult.error || 'Authentication rejected. Verify credentials.');
@@ -332,6 +362,10 @@ export const DesktopWebDashboard: React.FC = () => {
     setStreamError(null);
     setMatchedProfile(null);
     setVerificationSuccess(null);
+    setVerificationStep('MATCHING');
+    verificationStepRef.current = 'MATCHING';
+    isMatchingInProgressRef.current = false;
+    setSearchLatency(null);
 
     const mpGlobal = window as any;
     if (!mpGlobal.FaceMesh || !mpGlobal.Camera) {
@@ -523,9 +557,19 @@ export const DesktopWebDashboard: React.FC = () => {
         setSnapFront(snapshot);
         const success = await enrollmentOrchestrator.buildAndSaveFaceModel(snapshot);
         if (success) {
+          const status = enrollmentOrchestrator.getStatus();
           setOrchestratorState('COMPLETE');
           orchestratorStateRef.current = 'COMPLETE';
-          setEnrollProgressMsg('✅ Enrollment details stored successfully.');
+          
+          if (status.errorMessage && status.errorMessage.startsWith('ALREADY_REGISTERED:')) {
+            const parts = status.errorMessage.split(':');
+            const name = parts[1];
+            const id = parts[2];
+            setEnrollProgressMsg(`✅ Already registered face: ${name} (ID: ${id})`);
+          } else {
+            setEnrollProgressMsg('✅ Enrollment details stored successfully.');
+          }
+
           await refreshUsers();
           setTimeout(() => {
             setIsEnrolling(false);
@@ -533,7 +577,7 @@ export const DesktopWebDashboard: React.FC = () => {
             setEnrollRole('Toll Supervisor');
             enrollmentOrchestrator.reset();
             setOrchestratorState('IDLE');
-          }, 2500);
+          }, 4000);
         } else {
           const errStatus = enrollmentOrchestrator.getStatus();
           setOrchestratorState('ERROR');
@@ -544,15 +588,150 @@ export const DesktopWebDashboard: React.FC = () => {
       return;
     }
 
-    // Challenge-Response Liveness
-    const currentChallenge = activeChallengeRef.current;
-    if (currentChallenge !== 'SUCCESS' && currentChallenge !== 'FAILED') {
-      const resState = livenessService.processFrame(scaledLandmarks, currentChallenge);
-      setChallengeState(resState);
-
-      if (resState.progress >= 1.0) {
-        await handleAdvanceRealChallenge(scaledLandmarks);
+    // Two-Step Verification Flow
+    if (verificationStepRef.current === 'MATCHING') {
+      const isStableFace = Math.abs(pose.yaw) < 18 && Math.abs(pose.pitch) < 18 && Math.abs(pose.roll) < 15;
+      if (isStableFace && !isMatchingInProgressRef.current) {
+        isMatchingInProgressRef.current = true;
+        runStepAMatching(scaledLandmarks);
       }
+      return;
+    }
+
+    if (verificationStepRef.current === 'LIVENESS') {
+      const currentChallenge = activeChallengeRef.current;
+      if (currentChallenge !== 'SUCCESS' && currentChallenge !== 'FAILED') {
+        const resState = livenessService.processFrame(scaledLandmarks, currentChallenge);
+        setChallengeState(resState);
+
+        if (resState.progress >= 1.0) {
+          await handleAdvanceRealChallenge(scaledLandmarks);
+        }
+      }
+    }
+  };
+
+  const runStepAMatching = async (landmarks: any[]) => {
+    let queryEmbedding: Float32Array;
+    try {
+      queryEmbedding = await generateRealFaceEmbedding(landmarks);
+    } catch (err: any) {
+      console.error(err);
+      verificationStepRef.current = 'FAILED';
+      setVerificationStep('FAILED');
+      setChallengeState(prev => ({
+        ...prev,
+        currentChallenge: 'FAILED',
+        message: `Inference Error: ${err.message || String(err)}`
+      }));
+      setVerificationSuccess(false);
+      stopWebcam();
+      return;
+    }
+
+    const startMs = performance.now();
+    const matchResult = await dbService.vectorSearchMultiAngle(queryEmbedding);
+    const endMs = performance.now();
+    const latency = Math.round(endMs - startMs);
+    setSearchLatency(latency);
+
+    const isUserMatch = (loginWithFaceActive || isAdmin || isCommonTerminal)
+      ? !!matchResult.user
+      : (matchResult.user && matchResult.user.id === currentUserProfile?.employeeId);
+
+    if (isUserMatch && matchResult.similarity >= 0.72) {
+      const matchedUser = matchResult.user!;
+      setMatchedProfile(matchedUser);
+
+      const scaledSim = 0.95 + ((matchResult.similarity - 0.72) / (1.0 - 0.72)) * 0.05;
+      setMatchConfidence(scaledSim);
+
+      // Check if already marked today
+      const startOfToday = new Date().setHours(0, 0, 0, 0);
+      const isAlreadyMarked =
+        attendanceQueue.some(q => q.employeeId === matchedUser.id && q.enqueuedAt >= startOfToday) ||
+        logsList.some(log => log.userId === matchedUser.id && log.status === 'VERIFIED' && log.timestamp >= startOfToday);
+
+      if (isAlreadyMarked) {
+        setVerificationSuccess(true);
+        setAttendanceMarkedToday(true);
+        verificationStepRef.current = 'SUCCESS';
+        setVerificationStep('SUCCESS');
+        updateQueueStats();
+        await refreshLogs();
+        stopWebcam();
+
+        if (loginWithFaceActive) {
+          setTimeout(async () => {
+            const loginRes = await datalakeSyncService.login(matchedUser.id, "", true);
+            if (loginRes.success) {
+              const profile = datalakeSyncService.getCurrentProfile();
+              setCurrentUserProfile(profile);
+              setIsLoggedIn(true);
+
+              const attStatus = await datalakeSyncService.getTodayAttendanceStatus();
+              setAttendanceMarkedToday(attStatus.isMarked);
+
+              const adminUser = profile?.role === 'System Administrator' || profile?.employeeId === 'admin';
+              if (adminUser) {
+                setActiveTab('registry');
+                setIsEnrolling(false);
+              } else {
+                setIsEnrolling(false);
+                setActiveTab('terminal');
+              }
+            }
+            setLoginWithFaceActive(false);
+            setVerificationSuccess(null);
+          }, 2000);
+        }
+        return;
+      }
+
+      // Not marked today, proceed to Step B: Liveness Challenge
+      verificationStepRef.current = 'LIVENESS';
+      setVerificationStep('LIVENESS');
+
+      livenessService.reset();
+      const shuffled = livenessService.generateChallengeSequence();
+      challengesListRef.current = shuffled;
+      activeChallengeIdxRef.current = 0;
+      activeChallengeRef.current = shuffled[0];
+
+      setChallengesList(shuffled);
+      setActiveChallengeIdx(0);
+
+      setChallengeState({
+        currentChallenge: shuffled[0],
+        progress: 0,
+        isCalibrated: false,
+        message: `Match Succeeded! Starting Step B (Liveness). Please ${shuffled[0]}`,
+      });
+    } else {
+      verificationStepRef.current = 'FAILED';
+      setVerificationStep('FAILED');
+
+      let failMsg = 'Biometric mismatch. Access Refused.';
+      const enrolledCount = (await dbService.getEnrolledUsers()).length;
+      if (isCommonTerminal || !isAdmin) {
+        failMsg = 'Face not recognized. Ask admin to enroll your face.';
+      } else if (enrolledCount === 0) {
+        failMsg = 'No enrolled faces in database. Register a face first via the Registry tab.';
+      } else if (!matchResult.user) {
+        failMsg = `No matching face found among ${enrolledCount} enrolled profile(s). Similarity: ${(matchResult.similarity * 100).toFixed(1)}%`;
+      } else if (matchResult.similarity < 0.72) {
+        failMsg = `Weak match (${(matchResult.similarity * 100).toFixed(1)}%). Try better lighting or re-enroll.`;
+      } else {
+        failMsg = `Face matched ${matchResult.user.name} but access restricted to your profile only.`;
+      }
+
+      setChallengeState(prev => ({
+        ...prev,
+        currentChallenge: 'FAILED',
+        message: failMsg
+      }));
+      setVerificationSuccess(false);
+      stopWebcam();
     }
   };
 
@@ -562,13 +741,12 @@ export const DesktopWebDashboard: React.FC = () => {
 
     if (idx < list.length - 1) {
       const nextIdx = idx + 1;
-      // Update refs synchronously to prevent race conditions in subsequent frame loops
       activeChallengeIdxRef.current = nextIdx;
       activeChallengeRef.current = list[nextIdx];
-      
+
       setActiveChallengeIdx(nextIdx);
       livenessService.resetChallengeState();
-      
+
       setChallengeState(prev => ({
         ...prev,
         currentChallenge: list[nextIdx],
@@ -576,72 +754,68 @@ export const DesktopWebDashboard: React.FC = () => {
         message: `Challenge Step ${nextIdx + 1}: Please ${list[nextIdx]}`,
       }));
     } else {
-      // Update refs synchronously to prevent double invocation
       activeChallengeRef.current = 'SUCCESS';
-
-      // Liveness Success -> Run 1:N local matching
       setChallengeState(prev => ({
         ...prev,
         currentChallenge: 'SUCCESS',
         progress: 1.0,
-        message: 'Liveness approved! Searching local database...',
+        message: 'Liveness approved! Saving attendance...',
       }));
 
-      let queryEmbedding: Float32Array;
-      try {
-        queryEmbedding = await generateRealFaceEmbedding(landmarks);
-      } catch (err: any) {
-        console.error(err);
-        activeChallengeRef.current = 'FAILED';
-        setChallengeState(prev => ({
-          ...prev,
-          currentChallenge: 'FAILED',
-          message: `Inference Error: ${err.message || String(err)}`
-        }));
-        setVerificationSuccess(false);
-        stopWebcam();
-        return;
-      }
-      
-      const startMs = performance.now();
-      const matchResult = await dbService.vectorSearchMultiAngle(queryEmbedding);
-      const endMs = performance.now();
-      
-      setSearchLatency(Math.round(endMs - startMs));
-
-      const isUserMatch = (loginWithFaceActive || isAdmin) ? !!matchResult.user : (matchResult.user && matchResult.user.id === currentUserProfile?.employeeId);
-
-      if (isUserMatch && matchResult.similarity >= 0.72) {
-        setMatchedProfile(matchResult.user);
-        
-        // Scale similarity score from [0.72, 1.0] to [0.95, 1.0] for dynamic 95%+ display
-        const scaledSim = 0.95 + ((matchResult.similarity - 0.72) / (1.0 - 0.72)) * 0.05;
-        
-        setMatchConfidence(scaledSim);
-        setVerificationSuccess(true);
-
-        // Queue log entry offline via Datalake API
-        await datalakeSyncService.markAttendance({
-          employeeId: matchResult.user!.id,
+      if (matchedProfile) {
+        const attResult = await datalakeSyncService.markAttendance({
+          employeeId: matchedProfile.id,
           gpsLatitude: gpsLocation.latitude,
           gpsLongitude: gpsLocation.longitude,
           gpsAccuracyMeters: gpsLocation.accuracy,
-          matchConfidence: scaledSim,
+          matchConfidence: matchConfidence,
           livenessScore: 1.0
         });
 
-        updateQueueStats();      // also calls refreshAttendance()
+        if (!attResult.success) {
+          if (attResult.message === 'Attendance already marked for today.') {
+            setVerificationSuccess(true);
+            setAttendanceMarkedToday(true);
+            verificationStepRef.current = 'SUCCESS';
+            setVerificationStep('SUCCESS');
+            updateQueueStats();
+            await refreshLogs();
+            stopWebcam();
+            return;
+          }
+
+          verificationStepRef.current = 'FAILED';
+          setVerificationStep('FAILED');
+          activeChallengeRef.current = 'FAILED';
+          setChallengeState(prev => ({
+            ...prev,
+            currentChallenge: 'FAILED',
+            message: attResult.message || 'Verification failed.'
+          }));
+          setVerificationSuccess(false);
+          stopWebcam();
+          return;
+        }
+
+        setVerificationSuccess(true);
+        setAttendanceMarkedToday(true);
+        verificationStepRef.current = 'SUCCESS';
+        setVerificationStep('SUCCESS');
+        updateQueueStats();
         await refreshLogs();
         stopWebcam();
 
-        // Face recognition login transition
         if (loginWithFaceActive) {
           setTimeout(async () => {
-            const loginRes = await datalakeSyncService.login(matchResult.user!.id, "");
+            const loginRes = await datalakeSyncService.login(matchedProfile.id, "", true);
             if (loginRes.success) {
               const profile = datalakeSyncService.getCurrentProfile();
               setCurrentUserProfile(profile);
               setIsLoggedIn(true);
+
+              const attStatus = await datalakeSyncService.getTodayAttendanceStatus();
+              setAttendanceMarkedToday(attStatus.isMarked);
+
               const adminUser = profile?.role === 'System Administrator' || profile?.employeeId === 'admin';
               if (adminUser) {
                 setActiveTab('registry');
@@ -656,25 +830,8 @@ export const DesktopWebDashboard: React.FC = () => {
           }, 2000);
         }
       } else {
-        activeChallengeRef.current = 'FAILED';
-        // Provide a more specific failure message
-        let failMsg = 'Biometric mismatch. Access Refused.';
-        const enrolledCount = (await dbService.getEnrolledUsers()).length;
-        if (enrolledCount === 0) {
-          failMsg = 'No enrolled faces in database. Register a face first via the Registry tab.';
-        } else if (!matchResult.user) {
-          failMsg = `No matching face found among ${enrolledCount} enrolled profile(s). Similarity: ${(matchResult.similarity * 100).toFixed(1)}%`;
-        } else if (matchResult.similarity < 0.72) {
-          failMsg = `Weak match (${(matchResult.similarity * 100).toFixed(1)}%). Try better lighting or re-enroll.`;
-        } else {
-          failMsg = `Face matched ${matchResult.user.name} but access restricted to your profile only.`;
-        }
-        console.log(`[Verification] FAILED — enrolled: ${enrolledCount}, bestSim: ${matchResult.similarity.toFixed(3)}, bestUser: ${matchResult.user?.name || 'none'}`);
-        setChallengeState(prev => ({
-          ...prev,
-          currentChallenge: 'FAILED',
-          message: failMsg
-        }));
+        verificationStepRef.current = 'FAILED';
+        setVerificationStep('FAILED');
         setVerificationSuccess(false);
         stopWebcam();
       }
@@ -843,11 +1000,19 @@ export const DesktopWebDashboard: React.FC = () => {
       targetName = currentUserProfile.name;
       targetRole = currentUserProfile.role;
     } else {
+      if (selectedEnrollIdOption === 'custom') {
+        if (!enrollCustomId.trim()) {
+          alert('Provide custom Employee ID.');
+          return;
+        }
+        targetId = enrollCustomId.trim();
+      } else {
+        targetId = selectedEnrollIdOption;
+      }
       if (!enrollName.trim()) {
         alert('Provide candidate registration name.');
         return;
       }
-      targetId = `NHAI-USER-${Date.now().toString().slice(-4)}`;
       targetName = enrollName.trim();
       targetRole = enrollRole;
     }
@@ -861,13 +1026,13 @@ export const DesktopWebDashboard: React.FC = () => {
   };
 
   const handlePurgeUser = async (userId: string) => {
-    if (confirm(`Are you sure you want to purge user ${userId}? This will delete their local biometric signature.`)) {
+    if (confirm(`Are you sure you want to PERMANENTLY delete user ${userId} from the database? This action cannot be undone.`)) {
       const success = await dbService.deleteUser(userId);
       if (success) {
-        alert('User profile purged successfully.');
+        alert('User permanently deleted from database.');
         await refreshUsers();
       } else {
-        alert('Failed to purge user profile.');
+        alert('Failed to delete user.');
       }
     }
   };
@@ -1232,6 +1397,87 @@ export const DesktopWebDashboard: React.FC = () => {
                 </div>
 
                 <div className="verification-session">
+                  {/* Two-step progress indicators */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px', gap: '12px' }}>
+                    <div style={{
+                      flex: 1,
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid var(--border-color)',
+                      background: verificationStep === 'MATCHING' ? 'rgba(11, 60, 115, 0.08)' : (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS' ? 'rgba(16, 185, 129, 0.08)' : 'transparent'),
+                      borderColor: verificationStep === 'MATCHING' ? 'var(--navy-primary)' : (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS' ? '#10B981' : 'var(--border-color)'),
+                      textAlign: 'center',
+                      fontSize: '11px',
+                      fontWeight: 'bold',
+                      color: verificationStep === 'MATCHING' ? 'var(--navy-primary)' : (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS' ? '#065F46' : 'var(--text-gray)'),
+                      transition: 'all 0.3s'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                        <span style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          width: '16px',
+                          height: '16px',
+                          borderRadius: '50%',
+                          background: (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS') ? '#10B981' : 'var(--navy-primary)',
+                          color: '#fff',
+                          fontSize: '10px'
+                        }}>{(verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS') ? '✓' : '1'}</span>
+                        <span>Face Match</span>
+                      </div>
+                    </div>
+                    
+                    <div style={{
+                      flex: 1,
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid var(--border-color)',
+                      background: verificationStep === 'LIVENESS' ? 'rgba(11, 60, 115, 0.08)' : (verificationStep === 'SUCCESS' ? 'rgba(16, 185, 129, 0.08)' : 'transparent'),
+                      borderColor: verificationStep === 'LIVENESS' ? 'var(--navy-primary)' : (verificationStep === 'SUCCESS' ? '#10B981' : 'var(--border-color)'),
+                      textAlign: 'center',
+                      fontSize: '11px',
+                      fontWeight: 'bold',
+                      color: verificationStep === 'LIVENESS' ? 'var(--navy-primary)' : (verificationStep === 'SUCCESS' ? '#065F46' : 'var(--text-gray)'),
+                      transition: 'all 0.3s'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                        <span style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          width: '16px',
+                          height: '16px',
+                          borderRadius: '50%',
+                          background: verificationStep === 'SUCCESS' ? '#10B981' : (verificationStep === 'LIVENESS' ? 'var(--navy-primary)' : 'var(--border-color)'),
+                          color: (verificationStep === 'SUCCESS' || verificationStep === 'LIVENESS') ? '#fff' : 'var(--text-gray)',
+                          fontSize: '10px'
+                        }}>{verificationStep === 'SUCCESS' ? '✓' : '2'}</span>
+                        <span>Liveness Scan</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {matchedProfile && (
+                    <div style={{
+                      background: 'rgba(16, 185, 129, 0.05)',
+                      border: '1px solid rgba(16, 185, 129, 0.2)',
+                      borderRadius: '8px',
+                      padding: '10px 14px',
+                      marginBottom: '16px',
+                      fontSize: '12px'
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                        <span style={{ color: 'var(--text-gray)' }}>Matched Identity:</span>
+                        <strong style={{ color: '#065F46' }}>{matchedProfile.name} ({matchedProfile.role})</strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ color: 'var(--text-gray)' }}>Search Performance:</span>
+                        <strong style={{ color: 'var(--navy-dark)' }}>{searchLatency !== null ? `${searchLatency}ms` : 'Calculating...'}</strong>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="session-progress">
                     <div className="progress-bar">
                       <div 
@@ -1345,45 +1591,151 @@ export const DesktopWebDashboard: React.FC = () => {
                 <div className="card-header" style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
                   <div>
                     <h3>👥 Roster Directory</h3>
-                    <p style={{ fontSize: '12px', color: 'var(--text-gray)', marginTop: '2px' }}>Total Workers: {usersList.length}</p>
+                    <p style={{ fontSize: '12px', color: 'var(--text-gray)', marginTop: '2px' }}>
+                      Total Workers: {usersList.length} | Showing: {(() => {
+                        const startOfToday = new Date().setHours(0, 0, 0, 0);
+                        const presentWorkerIds = new Set([
+                          ...attendanceQueue.filter(q => q.enqueuedAt >= startOfToday).map(q => q.employeeId),
+                          ...logsList.filter(log => log.status === 'VERIFIED' && log.timestamp >= startOfToday).map(log => log.userId)
+                        ]);
+                        return usersList.filter(worker => {
+                          const isPresent = presentWorkerIds.has(worker.id);
+                          if (rosterFilter === 'PRESENT') return isPresent;
+                          if (rosterFilter === 'ABSENT') return !isPresent;
+                          return true;
+                        }).length;
+                      })()}
+                    </p>
                   </div>
                 </div>
+
+                {/* Filter Pills */}
+                <div style={{ display: 'flex', gap: '8px', padding: '12px 16px 0 16px' }}>
+                  <button 
+                    onClick={() => setRosterFilter('ALL')}
+                    style={{
+                      flex: 1,
+                      padding: '6px 12px',
+                      fontSize: '11px',
+                      fontWeight: 'bold',
+                      borderRadius: '20px',
+                      border: '1px solid var(--border-color)',
+                      background: rosterFilter === 'ALL' ? 'var(--navy-primary)' : 'transparent',
+                      color: rosterFilter === 'ALL' ? 'var(--white)' : 'var(--text-gray)',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    All
+                  </button>
+                  <button 
+                    onClick={() => setRosterFilter('PRESENT')}
+                    style={{
+                      flex: 1,
+                      padding: '6px 12px',
+                      fontSize: '11px',
+                      fontWeight: 'bold',
+                      borderRadius: '20px',
+                      border: '1px solid var(--border-color)',
+                      background: rosterFilter === 'PRESENT' ? '#10B981' : 'transparent',
+                      color: rosterFilter === 'PRESENT' ? 'var(--white)' : 'var(--text-gray)',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    Present
+                  </button>
+                  <button 
+                    onClick={() => setRosterFilter('ABSENT')}
+                    style={{
+                      flex: 1,
+                      padding: '6px 12px',
+                      fontSize: '11px',
+                      fontWeight: 'bold',
+                      borderRadius: '20px',
+                      border: '1px solid var(--border-color)',
+                      background: rosterFilter === 'ABSENT' ? '#EF4444' : 'transparent',
+                      color: rosterFilter === 'ABSENT' ? 'var(--white)' : 'var(--text-gray)',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    Absent
+                  </button>
+                </div>
+
                 <div className="roster-list-container" style={{ flex: '1', overflowY: 'auto', maxHeight: '420px', paddingRight: '4px', marginTop: '12px' }}>
                   {usersList.length > 0 ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                      {usersList.map(worker => {
-                        const isSystemAdmin = worker.role === 'System Administrator' || worker.id === 'admin';
-                        const badgeClass = isSystemAdmin ? 'admin-badge' : 'worker-badge';
-                        const badgeLabel = isSystemAdmin ? 'Admin' : 'Worker';
+                      {(() => {
+                        const startOfToday = new Date().setHours(0, 0, 0, 0);
+                        const presentWorkerIds = new Set([
+                          ...attendanceQueue.filter(q => q.enqueuedAt >= startOfToday).map(q => q.employeeId),
+                          ...logsList.filter(log => log.status === 'VERIFIED' && log.timestamp >= startOfToday).map(log => log.userId)
+                        ]);
 
-                        return (
-                          <div key={worker.id} style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            padding: '12px',
-                            background: 'var(--ice-bg)',
-                            borderRadius: '8px',
-                            border: '1px solid var(--border-color)'
-                          }}>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                              <span style={{ fontWeight: 'bold', fontSize: '13px', color: 'var(--navy-dark)' }}>{worker.name}</span>
-                              <span style={{ fontSize: '11px', color: 'var(--text-gray)' }}>ID: {worker.id}</span>
+                        const filteredWorkers = usersList.filter(worker => {
+                          const isPresent = presentWorkerIds.has(worker.id);
+                          if (rosterFilter === 'PRESENT') return isPresent;
+                          if (rosterFilter === 'ABSENT') return !isPresent;
+                          return true;
+                        });
+
+                        if (filteredWorkers.length === 0) {
+                          return (
+                            <div className="empty-state" style={{ padding: '40px 10px' }}>
+                              <p className="empty-state-msg">No workers found.</p>
                             </div>
-                            <span className={`role-badge-tag ${badgeClass}`} style={{
-                              fontSize: '10px',
-                              fontWeight: 'bold',
-                              padding: '4px 8px',
-                              borderRadius: '12px',
-                              textTransform: 'uppercase',
-                              letterSpacing: '0.4px',
-                              whiteSpace: 'nowrap'
+                          );
+                        }
+
+                        return filteredWorkers.map(worker => {
+                          const isSystemAdmin = worker.role === 'System Administrator' || worker.id === 'admin';
+                          const badgeClass = isSystemAdmin ? 'admin-badge' : 'worker-badge';
+                          const badgeLabel = isSystemAdmin ? 'Admin' : 'Worker';
+                          const isPresent = presentWorkerIds.has(worker.id);
+
+                          return (
+                            <div key={worker.id} style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '12px',
+                              background: 'var(--ice-bg)',
+                              borderRadius: '8px',
+                              border: '1px solid var(--border-color)'
                             }}>
-                              {badgeLabel}
-                            </span>
-                          </div>
-                        );
-                      })}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                {/* Status dot */}
+                                <span style={{
+                                  width: '8px',
+                                  height: '8px',
+                                  borderRadius: '50%',
+                                  display: 'inline-block',
+                                  flexShrink: 0,
+                                  backgroundColor: isPresent ? '#10B981' : '#EF4444',
+                                  boxShadow: isPresent ? '0 0 6px #10B981' : '0 0 6px #EF4444'
+                                }} />
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                  <span style={{ fontWeight: 'bold', fontSize: '13px', color: 'var(--navy-dark)' }}>{worker.name}</span>
+                                  <span style={{ fontSize: '11px', color: 'var(--text-gray)' }}>ID: {worker.id}</span>
+                                </div>
+                              </div>
+                              <span className={`role-badge-tag ${badgeClass}`} style={{
+                                fontSize: '10px',
+                                fontWeight: 'bold',
+                                padding: '4px 8px',
+                                borderRadius: '12px',
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.4px',
+                                whiteSpace: 'nowrap'
+                              }}>
+                                {badgeLabel}
+                              </span>
+                            </div>
+                          );
+                        });
+                      })()}
                     </div>
                   ) : (
                     <div className="empty-state" style={{ padding: '40px 10px' }}>
@@ -1415,24 +1767,27 @@ export const DesktopWebDashboard: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {attendanceQueue.slice(0, 10).map((entry) => {
-                      const person = usersList.find(u => u.id === entry.employeeId);
+                    {logsList.slice(0, 10).map((log) => {
+                      const person = usersList.find(u => u.id === log.userId);
+                      // Check if the record is still pending in the sync queue to show correct sync badge
+                      const isPending = attendanceQueue.some(q => q.employeeId === log.userId && Math.abs(q.timestamp - log.timestamp) < 5000);
+                      const syncStatus = isPending ? 'PENDING' : 'SYNCED';
                       return (
-                        <tr key={entry.localId}>
-                          <td>{new Date(entry.enqueuedAt).toLocaleTimeString('en-IN')}</td>
-                          <td><strong>{entry.employeeId}</strong></td>
+                        <tr key={log.id}>
+                          <td>{new Date(log.timestamp).toLocaleTimeString('en-IN')}</td>
+                          <td><strong>{log.userId}</strong></td>
                           <td>{person?.name ?? '—'}</td>
-                          <td>{entry.matchConfidence ? `${(entry.matchConfidence * 100).toFixed(1)}%` : '—'}</td>
-                          <td>{entry.gpsLatitude?.toFixed(4)}, {entry.gpsLongitude?.toFixed(4)}</td>
+                          <td>{log.confidence ? `${(log.confidence * 100).toFixed(1)}%` : '—'}</td>
+                          <td>{log.latitude?.toFixed(4)}, {log.longitude?.toFixed(4)}</td>
                           <td>
-                            <span className={`status-badge ${entry.syncStatus.toLowerCase()}`}>
-                              {entry.syncStatus}
+                            <span className={`status-badge ${syncStatus.toLowerCase()}`}>
+                              {syncStatus}
                             </span>
                           </td>
                         </tr>
                       );
                     })}
-                    {attendanceQueue.length === 0 && (
+                    {logsList.length === 0 && (
                       <tr>
                         <td colSpan={6} className="no-logs" style={{ textAlign: 'center', padding: '20px' }}>
                           No verification logs found. Mark attendance above to populate.
@@ -1488,7 +1843,7 @@ export const DesktopWebDashboard: React.FC = () => {
                               className="btn-sim btn-danger"
                               style={{ padding: '4px 8px', fontSize: '11px', margin: 0 }}
                             >
-                              Purge
+                              🗑️ Delete
                             </button>
                           </td>
                         </tr>
@@ -1506,12 +1861,40 @@ export const DesktopWebDashboard: React.FC = () => {
                   <div className="enrollment-panel">
                     <h4>Guided Biometric Onboarding</h4>
                     <div className="input-group">
+                      <label style={{ display: 'block', marginBottom: '4px' }}>Select Staff to Enroll</label>
+                      <select 
+                        value={selectedEnrollIdOption}
+                        onChange={(e) => setSelectedEnrollIdOption(e.target.value)}
+                        style={{ padding: '10px', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '13px', fontFamily: 'inherit', outline: 'none' }}
+                      >
+                        <option value="NHAI-2026-001">NHAI-2026-001 (Keshav Kumar Agrawal)</option>
+                        <option value="NHAI-2026-002">NHAI-2026-002 (Harshiya Sharma)</option>
+                        <option value="NHAI-2026-003">NHAI-2026-003 (Anurag Mohapatra)</option>
+                        <option value="admin">admin (System Administrator)</option>
+                        <option value="custom">Custom ID...</option>
+                      </select>
+                    </div>
+
+                    {selectedEnrollIdOption === 'custom' && (
+                      <div className="input-group">
+                        <label>Custom Employee ID</label>
+                        <input 
+                          type="text" 
+                          value={enrollCustomId} 
+                          onChange={(e) => setEnrollCustomId(e.target.value)} 
+                          placeholder="e.g. NHAI-2026-004"
+                        />
+                      </div>
+                    )}
+
+                    <div className="input-group">
                       <label>Name</label>
                       <input 
                         type="text" 
                         value={enrollName} 
                         onChange={(e) => setEnrollName(e.target.value)} 
                         placeholder="Full Name"
+                        disabled={selectedEnrollIdOption !== 'custom'}
                       />
                     </div>
                     <div className="input-group">
@@ -1521,6 +1904,7 @@ export const DesktopWebDashboard: React.FC = () => {
                         value={enrollRole} 
                         onChange={(e) => setEnrollRole(e.target.value)} 
                         placeholder="e.g. Toll Operator, Admin, etc."
+                        disabled={selectedEnrollIdOption !== 'custom'}
                       />
                     </div>
 
@@ -1864,6 +2248,567 @@ export const DesktopWebDashboard: React.FC = () => {
 
 
     }
+  };
+
+  // Helper functions for specific roles and states
+  const renderStaffUnenrolled = () => {
+    return (
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '60vh',
+        width: '100%'
+      }}>
+        <div className="card" style={{
+          maxWidth: '480px',
+          width: '100%',
+          textAlign: 'center',
+          padding: '40px',
+          boxShadow: '0 10px 25px rgba(0,0,0,0.05)',
+          borderRadius: '16px',
+          border: '1px solid var(--border-color)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: '20px'
+        }}>
+          <div style={{
+            width: '80px',
+            height: '80px',
+            borderRadius: '50%',
+            background: 'var(--warn-bg)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '36px',
+            color: 'var(--warn)'
+          }}>
+            👤
+          </div>
+          <div>
+            <h2 style={{ color: 'var(--navy-dark)', margin: '0 0 10px 0', fontSize: '22px', fontWeight: '700' }}>Biometric Profile Missing</h2>
+            <p style={{ color: 'var(--text-gray)', fontSize: '14px', margin: 0, lineHeight: '1.5' }}>
+              Your offline facial profile has not been registered yet. Please ask the Administrator to enroll your face under their session.
+            </p>
+          </div>
+          <button onClick={handleLogout} className="btn-login-submit" style={{ width: '100%', height: '44px', marginTop: '10px' }}>
+            Back to Login
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderStaffSuccess = () => {
+    const activeId = matchedProfile ? matchedProfile.id : (currentUserProfile?.employeeId || '');
+    const activeName = matchedProfile ? matchedProfile.name : (currentUserProfile?.name || '');
+
+    const today = new Date().setHours(0, 0, 0, 0);
+    // Find today's attendance log in queue
+    const queueLog = attendanceQueue.find(
+      e => e.employeeId === activeId && e.enqueuedAt >= today
+    );
+    // Find today's log in ledger
+    const ledgerLog = logsList.find(
+      l => l.userId === activeId && l.status === 'VERIFIED' && l.timestamp >= today
+    );
+
+    const displayTimestamp = queueLog ? queueLog.timestamp : (ledgerLog ? ledgerLog.timestamp : Date.now());
+    const displayHash = queueLog ? queueLog.offlineProofHash : (ledgerLog ? ledgerLog.hash : '');
+
+    return (
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '70vh',
+        width: '100%'
+      }}>
+        <div className="card" style={{
+          maxWidth: '520px',
+          width: '100%',
+          padding: '40px',
+          boxShadow: '0 20px 40px rgba(0,0,0,0.06)',
+          borderRadius: '20px',
+          border: '1px solid var(--border-color)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: '24px',
+          background: 'var(--white)'
+        }}>
+          <div style={{
+            width: '90px',
+            height: '90px',
+            borderRadius: '50%',
+            background: 'var(--success-bg)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '44px',
+            color: 'var(--success)',
+            boxShadow: '0 0 20px rgba(6, 95, 70, 0.15)',
+            border: '3px solid var(--white)'
+          }}>
+            ✓
+          </div>
+          <div style={{ textAlign: 'center' }}>
+            <h2 style={{ color: 'var(--navy-dark)', margin: '0 0 6px 0', fontSize: '24px', fontWeight: '800' }}>Attendance Marked</h2>
+            <span className="network-badge online" style={{ fontSize: '10px', padding: '4px 10px', borderRadius: '12px' }}>
+              OFFLINE EDGE AI SUCCESS
+            </span>
+          </div>
+
+          <div style={{
+            width: '100%',
+            background: 'var(--ice-bg)',
+            borderRadius: '12px',
+            padding: '20px',
+            border: '1px solid var(--border-color)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '12px',
+            fontSize: '13px'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ color: 'var(--text-gray)' }}>Name:</span>
+              <strong style={{ color: 'var(--navy-dark)' }}>{activeName}</strong>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ color: 'var(--text-gray)' }}>Employee ID:</span>
+              <strong style={{ color: 'var(--navy-dark)' }}>{activeId}</strong>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ color: 'var(--text-gray)' }}>Verify Time:</span>
+              <strong style={{ color: 'var(--navy-dark)' }}>
+                {new Date(displayTimestamp).toLocaleTimeString()}
+              </strong>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ color: 'var(--text-gray)' }}>GPS coordinates:</span>
+              <strong style={{ color: 'var(--navy-dark)' }}>
+                {gpsLocation.latitude.toFixed(6)}, {gpsLocation.longitude.toFixed(6)}
+              </strong>
+            </div>
+            {displayHash && (
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '4px',
+                borderTop: '1px dashed var(--border-color)',
+                paddingTop: '10px',
+                marginTop: '4px'
+              }}>
+                <span style={{ color: 'var(--text-gray)' }}>Cryptographic Ledger Hash:</span>
+                <code style={{ fontSize: '10px', wordBreak: 'break-all', color: 'var(--text-gray)', background: '#EAEEF4', padding: '4px 8px', borderRadius: '4px' }}>
+                  {displayHash}
+                </code>
+              </div>
+            )}
+          </div>
+
+          {isCommonTerminal ? (
+            <button 
+              onClick={() => {
+                setAttendanceMarkedToday(false);
+                setMatchedProfile(null);
+                setVerificationSuccess(null);
+                setTimeout(() => startWebcam(), 100);
+              }} 
+              className="btn-primary" 
+              style={{ width: '100%', height: '46px', margin: 0 }}
+            >
+              Next Worker Check-In
+            </button>
+          ) : (
+            <button onClick={handleLogout} className="btn-login-submit" style={{ width: '100%', height: '46px', margin: 0 }}>
+              Logout Session
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderStaffTerminal = () => {
+    return (
+      <div className="dashboard-grid" style={{ justifyContent: 'center' }}>
+        {/* Left Box: Video */}
+        <div className="card terminal-card" style={{ maxWidth: '480px', width: '100%' }}>
+          <div className="card-header">
+            <h3>Attendance Verification Terminal</h3>
+            <div className="clahe-toggle">
+              <span className="toggle-txt">CLAHE Correction</span>
+              <label className="switch-sm">
+                <input 
+                  type="checkbox" 
+                  checked={claheEnabled} 
+                  onChange={(e) => setClaheEnabled(e.target.checked)} 
+                />
+                <span className="slider round"></span>
+              </label>
+            </div>
+          </div>
+
+          <div className="camera-viewport">
+            <div className="video-relative" style={{ display: streamActive ? 'block' : 'none' }}>
+              <video 
+                ref={videoRef} 
+                autoPlay 
+                playsInline 
+                muted 
+                className="hidden-video"
+              />
+              <canvas 
+                ref={meshCanvasRef} 
+                className="live-canvas"
+                width="480"
+                height="480"
+              />
+              <canvas 
+                ref={canvasRef} 
+                style={{ display: 'none' }}
+                width="112"
+                height="112"
+              />
+            </div>
+            {!streamActive && (
+              <div className="camera-offline">
+                <span className="camera-icon">👁️</span>
+                <button onClick={startWebcam} className="btn-camera-toggle">
+                  {mpLoading ? 'Loading libraries...' : 'Activate Camera'}
+                </button>
+                {streamError && <p className="error-txt">{streamError}</p>}
+              </div>
+            )}
+          </div>
+
+          {streamActive && (
+            <div className="camera-actions">
+              <button onClick={stopWebcam} className="btn-camera-close">
+                Close Camera Feed
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Right Box: Liveness Check & Results */}
+        <div className="card control-card" style={{ maxWidth: '440px', width: '100%' }}>
+          <div className="card-header">
+            <h3>Liveness Challenge</h3>
+          </div>
+
+          <div className="verification-session">
+            {/* Two-step progress indicators */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px', gap: '12px' }}>
+              <div style={{
+                flex: 1,
+                padding: '8px 12px',
+                borderRadius: '8px',
+                border: '1px solid var(--border-color)',
+                background: verificationStep === 'MATCHING' ? 'rgba(11, 60, 115, 0.08)' : (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS' ? 'rgba(16, 185, 129, 0.08)' : 'transparent'),
+                borderColor: verificationStep === 'MATCHING' ? 'var(--navy-primary)' : (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS' ? '#10B981' : 'var(--border-color)'),
+                textAlign: 'center',
+                fontSize: '11px',
+                fontWeight: 'bold',
+                color: verificationStep === 'MATCHING' ? 'var(--navy-primary)' : (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS' ? '#065F46' : 'var(--text-gray)'),
+                transition: 'all 0.3s'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: '16px',
+                    height: '16px',
+                    borderRadius: '50%',
+                    background: (verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS') ? '#10B981' : 'var(--navy-primary)',
+                    color: '#fff',
+                    fontSize: '10px'
+                  }}>{(verificationStep === 'LIVENESS' || verificationStep === 'SUCCESS') ? '✓' : '1'}</span>
+                  <span>Face Match</span>
+                </div>
+              </div>
+              
+              <div style={{
+                flex: 1,
+                padding: '8px 12px',
+                borderRadius: '8px',
+                border: '1px solid var(--border-color)',
+                background: verificationStep === 'LIVENESS' ? 'rgba(11, 60, 115, 0.08)' : (verificationStep === 'SUCCESS' ? 'rgba(16, 185, 129, 0.08)' : 'transparent'),
+                borderColor: verificationStep === 'LIVENESS' ? 'var(--navy-primary)' : (verificationStep === 'SUCCESS' ? '#10B981' : 'var(--border-color)'),
+                textAlign: 'center',
+                fontSize: '11px',
+                fontWeight: 'bold',
+                color: verificationStep === 'LIVENESS' ? 'var(--navy-primary)' : (verificationStep === 'SUCCESS' ? '#065F46' : 'var(--text-gray)'),
+                transition: 'all 0.3s'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: '16px',
+                    height: '16px',
+                    borderRadius: '50%',
+                    background: verificationStep === 'SUCCESS' ? '#10B981' : (verificationStep === 'LIVENESS' ? 'var(--navy-primary)' : 'var(--border-color)'),
+                    color: (verificationStep === 'SUCCESS' || verificationStep === 'LIVENESS') ? '#fff' : 'var(--text-gray)',
+                    fontSize: '10px'
+                  }}>{verificationStep === 'SUCCESS' ? '✓' : '2'}</span>
+                  <span>Liveness Scan</span>
+                </div>
+              </div>
+            </div>
+
+            {matchedProfile && (
+              <div style={{
+                background: 'rgba(16, 185, 129, 0.05)',
+                border: '1px solid rgba(16, 185, 129, 0.2)',
+                borderRadius: '8px',
+                padding: '10px 14px',
+                marginBottom: '16px',
+                fontSize: '12px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                  <span style={{ color: 'var(--text-gray)' }}>Matched Identity:</span>
+                  <strong style={{ color: '#065F46' }}>{matchedProfile.name} ({matchedProfile.role})</strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ color: 'var(--text-gray)' }}>Search Performance:</span>
+                  <strong style={{ color: 'var(--navy-dark)' }}>{searchLatency !== null ? `${searchLatency}ms` : 'Calculating...'}</strong>
+                </div>
+              </div>
+            )}
+
+            <div className="session-progress">
+              <div className="progress-bar">
+                <div 
+                  className="progress-fill" 
+                  style={{ width: `${challengeState.progress * 100}%` }}
+                />
+              </div>
+              <div className="progress-lbls">
+                <span>Verification Progress</span>
+                <span>{Math.round(challengeState.progress * 100)}%</span>
+              </div>
+            </div>
+
+            <div className="liveness-console">
+              <div className="console-indicator">
+                <span className="console-prompt">Instruction:</span>
+                <span className="console-challenge">{challengeState.currentChallenge}</span>
+              </div>
+              <p className="console-status-msg">{challengeState.message}</p>
+            </div>
+
+            {verificationSuccess !== null && (
+              <div className={`verification-result-card ${verificationSuccess ? 'verified' : 'denied'}`}>
+                <div className="result-header">
+                  <span className="result-icon">{verificationSuccess ? '✓' : '✗'}</span>
+                  <h4>
+                    {verificationSuccess 
+                      ? 'Verification Success' 
+                      : (isCommonTerminal || !isAdmin ? 'Unverified' : 'Verification Failed')}
+                  </h4>
+                </div>
+                {verificationSuccess ? (
+                  <div className="result-body">
+                    <p style={{ margin: 0, fontWeight: 'bold' }}>Logged successfully. Saving attendance...</p>
+                  </div>
+                ) : (
+                  <div className="result-body" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <p style={{ margin: 0 }}>
+                      {isCommonTerminal || !isAdmin 
+                        ? (challengeState.message || "Face not recognized. Ask admin to enroll your face.") 
+                        : "Mismatch or spoofing detected. Click Retry or try again."}
+                    </p>
+                    <button 
+                      onClick={() => {
+                        setVerificationSuccess(null);
+                        setMatchedProfile(null);
+                        setTimeout(() => startWebcam(), 100);
+                      }}
+                      className="btn-primary"
+                      style={{ marginTop: '8px', padding: '8px 12px', fontSize: '12px', width: 'fit-content', alignSelf: 'center' }}
+                    >
+                      🔄 Retry Scan
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderAdminForceEnroll = () => {
+    return (
+      <div className="dashboard-grid">
+        {/* Left Column: Directory / Enrollment State Panel */}
+        <div className="card registry-card" style={{ flex: '1', minWidth: '0' }}>
+          <div className="card-header">
+            <h3>Admin Biometric Onboarding</h3>
+          </div>
+          <div style={{ padding: '20px' }}>
+            <p style={{ marginBottom: '16px', color: 'var(--text-slate)', fontSize: '14px', lineHeight: '1.4' }}>
+              Hello <strong>System Administrator</strong>. Before accessing the management portal, you must first register your face profile in the local offline database. Let's start the 6-stage head scan.
+            </p>
+            <div className="enrollment-panel" style={{ background: 'transparent', padding: 0, boxShadow: 'none', border: 'none' }}>
+              <div className="enrollment-guidance">
+                <p className="enroll-prompt" style={{ fontSize: '15px', fontWeight: 'bold', color: 'var(--navy-primary)', minHeight: '40px' }}>{enrollProgressMsg}</p>
+                {enrollFrameResult && (
+                  <div className="enroll-step-progress" style={{ margin: '14px 0' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px' }}>
+                      <span>Step: <strong>{enrollFrameResult.currentStep}</strong></span>
+                      <span><strong>{Math.round(enrollFrameResult.overallProgress * 100)}% Complete</strong></span>
+                    </div>
+                    <div className="progress-bar-sm" style={{ marginTop: '6px' }}>
+                      <div className="progress-fill" style={{ width: `${enrollFrameResult.overallProgress * 100}%` }} />
+                    </div>
+                  </div>
+                )}
+                {orchestratorState !== 'IDLE' && (
+                  <div className="enroll-gallery" style={{ marginTop: '16px' }}>
+                    {ENROLLMENT_STEPS.map(stepConfig => {
+                      const photoObj = capturedStepPhotos.find(p => p.step === stepConfig.step);
+                      const label = stepConfig.label;
+                      
+                      return (
+                        <div key={stepConfig.step} className="enroll-gallery-item">
+                          <div style={{
+                            width: '32px',
+                            height: '32px',
+                            borderRadius: '50%',
+                            border: photoObj ? '2px solid var(--navy-primary)' : '2px dashed var(--border-color)',
+                            backgroundColor: photoObj ? 'transparent' : 'var(--white)',
+                            display: 'flex',
+                            justifyContent: 'center',
+                            alignItems: 'center',
+                            overflow: 'hidden',
+                            position: 'relative'
+                          }}>
+                            {photoObj ? (
+                              <>
+                                <img src={photoObj.photo} alt={label} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                <div style={{
+                                  position: 'absolute',
+                                  bottom: 0,
+                                  right: 0,
+                                  background: 'var(--navy-primary)',
+                                  color: 'var(--white)',
+                                  borderRadius: '50%',
+                                  width: '10px',
+                                  height: '10px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  fontSize: '6px',
+                                  fontWeight: 'bold'
+                                }}>✓</div>
+                              </>
+                            ) : (
+                              <span style={{ fontSize: '11px', color: 'var(--navy-light)', fontWeight: 'bold' }}>
+                                {stepConfig.arrow === 'up' && '↑'}
+                                {stepConfig.arrow === 'down' && '↓'}
+                                {stepConfig.arrow === 'left' && '←'}
+                                {stepConfig.arrow === 'right' && '→'}
+                                {stepConfig.arrow === 'tilt-left' && '⤾'}
+                                {stepConfig.arrow === 'none' && '👤'}
+                              </span>
+                            )}
+                          </div>
+                          <span style={{ 
+                            fontSize: '8px', 
+                            fontWeight: photoObj ? 'bold' : 'normal',
+                            color: photoObj ? 'var(--navy-primary)' : 'var(--text-gray)', 
+                            textAlign: 'center',
+                            whiteSpace: 'nowrap'
+                          }}>
+                            {stepConfig.step === 'LOOK_CENTER' ? 'Center' : 
+                             stepConfig.step === 'LOOK_UP' ? 'Up' : 
+                             stepConfig.step === 'LOOK_DOWN' ? 'Down' : 
+                             stepConfig.step === 'TURN_LEFT' ? 'Left' : 
+                             stepConfig.step === 'TURN_RIGHT' ? 'Right' : 'Tilt'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="enroll-buttons" style={{ marginTop: '20px' }}>
+                <button onClick={startEnrollmentWizard} className="btn-primary" style={{ height: '42px', width: '100%' }}>
+                  {orchestratorState === 'ENROLLING' ? 'Scanning...' : 'Start Onboarding Scan'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Column: Camera Viewport */}
+        <div className="card terminal-card" style={{ flex: '1.2', minWidth: '0' }}>
+          <div className="card-header">
+            <h3>Onboarding Camera</h3>
+            <div className="clahe-toggle">
+              <span className="toggle-txt">CLAHE Correction</span>
+              <label className="switch-sm">
+                <input 
+                  type="checkbox" 
+                  checked={claheEnabled} 
+                  onChange={(e) => setClaheEnabled(e.target.checked)} 
+                />
+                <span className="slider round"></span>
+              </label>
+            </div>
+          </div>
+
+          <div className="camera-viewport">
+            <div className="video-relative" style={{ display: streamActive ? 'block' : 'none' }}>
+              <video 
+                ref={videoRef} 
+                autoPlay 
+                playsInline 
+                muted 
+                className="hidden-video"
+              />
+              <canvas 
+                ref={meshCanvasRef} 
+                className="live-canvas"
+                width="480"
+                height="480"
+              />
+              <canvas 
+                ref={canvasRef} 
+                style={{ display: 'none' }}
+                width="112"
+                height="112"
+              />
+            </div>
+            {!streamActive && (
+              <div className="camera-offline">
+                <span className="camera-icon">👁️</span>
+                <button onClick={startWebcam} className="btn-camera-toggle">
+                  {mpLoading ? 'Loading libraries...' : 'Activate Camera'}
+                </button>
+                {streamError && <p className="error-txt">{streamError}</p>}
+              </div>
+            )}
+          </div>
+
+          {streamActive && (
+            <div className="camera-actions">
+              <button onClick={stopWebcam} className="btn-camera-close">
+                Close Camera Feed
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
   };
 
   // Rendering main layout
@@ -3547,7 +4492,19 @@ export const DesktopWebDashboard: React.FC = () => {
             )}
             
             <main className="tab-viewport">
-              {renderTabContent()}
+              {isAdmin ? (
+                renderTabContent()
+              ) : (
+                !staffEnrolled ? (
+                  renderStaffUnenrolled()
+                ) : (
+                  attendanceMarkedToday ? (
+                    renderStaffSuccess()
+                  ) : (
+                    renderStaffTerminal()
+                  )
+                )
+              )}
             </main>
           </div>
         </div>

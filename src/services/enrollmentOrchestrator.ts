@@ -196,6 +196,16 @@ export class EnrollmentOrchestratorService {
       const masterF32 = this.embedder.buildMasterEmbedding(angleInputs);
       const masterEmbedding = Array.from(masterF32);
 
+      // Check if this face matches an existing user in the database
+      const dbService = LocalDatabaseService.getInstance();
+      const matchResult = await dbService.vectorSearchMultiAngle(masterF32);
+      if (matchResult.user && matchResult.similarity >= 0.72) {
+        console.log(`[EnrollmentOrchestrator] Face already registered under user: ${matchResult.user.name} (${matchResult.user.id})`);
+        this.errorMessage = `ALREADY_REGISTERED:${matchResult.user.name}:${matchResult.user.id}`;
+        this.state = 'COMPLETE';
+        return true;
+      }
+
       const newUser: EnrolledUser = {
         id: this.session.userId,
         name: this.session.userName,

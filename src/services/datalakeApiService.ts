@@ -227,83 +227,91 @@ export class DatalakeApiService {
    *   cached encrypted session from AsyncStorage. Officers can still use
    *   the app with their cached credentials.
    */
-  public async login(employeeId: string, password: string): Promise<{
+  public async login(employeeId: string, password?: string, isFaceAuth: boolean = false): Promise<{
     success: boolean;
     profile?: DatalakeAuthResponse['employeeProfile'];
     isOfflineSession?: boolean;
     error?: string;
   }> {
-    // 1. Try NIC server login
+    const MOCK_EMPLOYEES: Record<string, { password: string; name: string; role: string }> = {
+      'NHAI-2026-001': { password: 'Nhai@2026', name: 'Keshav Kumar Agrawal', role: 'Toll Supervisor' },
+      'NHAI-2026-002': { password: 'Nhai@2026', name: 'Harshiya Sharma',       role: 'Checkpost Inspector' },
+      'NHAI-2026-003': { password: 'Nhai@2026', name: 'Anurag Mohapatra',      role: 'Field Security Lead' },
+      'admin':         { password: 'Admin@2026', name: 'System Administrator', role: 'System Administrator' },
+    };
+
+    // Check if user is enrolled in local DB
+    const enrolledUsers = await this.db.getEnrolledUsers();
+    const isEnrolled = enrolledUsers.some(u => u.id === employeeId);
+    const dbUser = enrolledUsers.find(u => u.id === employeeId);
+
+    let matchedUser: { name: string; role: string } | null = null;
+
+    if (isFaceAuth) {
+      // Bypassing password for verified face scan
+      if (!isEnrolled || !dbUser) {
+        return { success: false, error: 'Biometric profile missing. Ask admin to enroll your face.' };
+      }
+      matchedUser = dbUser;
+    } else {
+      // Standard ID/password authentication
+      const mockUser = MOCK_EMPLOYEES[employeeId];
+      if (mockUser) {
+        if (mockUser.password !== password) {
+          return { success: false, error: 'Invalid credentials. Check password.' };
+        }
+        matchedUser = mockUser;
+      } else if (dbUser) {
+        // If enrolled but not in static mock list, allow login with password 'Nhai@2026'
+        if (password !== 'Nhai@2026') {
+          return { success: false, error: 'Invalid credentials. Check password.' };
+        }
+        matchedUser = dbUser;
+      } else if (employeeId.startsWith('NHAI-') || employeeId.startsWith('NHAI-USER-')) {
+        // If employee ID exists but not enrolled yet, allow login with password 'Nhai@2026' (simulation)
+        if (password !== 'Nhai@2026') {
+          return { success: false, error: 'Invalid credentials. Check password.' };
+        }
+        matchedUser = {
+          name: `Staff User ${employeeId}`,
+          role: 'Toll Supervisor'
+        };
+      } else {
+        return { success: false, error: 'Employee ID not recognized.' };
+      }
+    }
+
+    const now = Date.now();
+    const profile = {
+      employeeId,
+      name: matchedUser.name,
+      role: employeeId === 'admin' ? 'System Administrator' : (matchedUser.role || 'Toll Supervisor'),
+      projectCode: 'NH-48-DELHI-JAIPUR',
+      region: 'DELHI-NCR',
+      aadhaarLinked: true,
+      faceEnrolled: isEnrolled,
+    };
+
+    this.session = {
+      token: `nic-jwt-offline-${this.ledger.sha256(employeeId + now.toString()).substring(0, 32)}`,
+      expiresAt: now + 8 * 60 * 60 * 1000,
+      employeeProfile: profile,
+    };
+
+    await this._persistSession();
+
+    // Trigger background actions if online (best effort)
     try {
       const networkState = await NetInfo.fetch();
       if (networkState.isConnected && networkState.isInternetReachable !== false) {
-        try {
-          const result = await this._nicApiLogin(employeeId, password);
-          if (result.success) {
-            this.session = {
-              token: result.token,
-              expiresAt: result.expiresAt,
-              employeeProfile: result.employeeProfile,
-            };
-            await this._persistSession();
-
-            // Download updated face roster from NIC for offline use
-            this._downloadRosterInBackground(result.token, result.employeeProfile.projectCode);
-
-            return { success: true, profile: result.employeeProfile, isOfflineSession: false };
-          }
-        } catch (authErr: any) {
-          if (authErr && authErr.message === 'INVALID_CREDENTIALS') {
-            return { success: false, error: 'Invalid credentials. Check employee ID and password.' };
-          }
-          throw authErr;
-        }
-        return { success: false, error: 'Invalid credentials. Check employee ID and password.' };
+        this._downloadRosterInBackground(this.session.token, profile.projectCode);
       }
-    } catch (networkErr) {
-      console.warn('[DatalakeAPI] NIC server unreachable. Trying offline session...');
-    }
-
-    // 2. Offline fallback: validate cached session
-    if (this.session && this.session.employeeProfile.employeeId === employeeId) {
-      console.log('[DatalakeAPI] Authenticated via cached session (offline mode).');
-      return {
-        success: true,
-        profile: this.session.employeeProfile,
-        isOfflineSession: true,
-      };
-    }
-
-    // Check local database roster for offline validation fallback
-    const enrolledUsers = await this.db.getEnrolledUsers();
-    const matchedUser = enrolledUsers.find(u => u.id === employeeId);
-    if (matchedUser) {
-      console.log('[DatalakeAPI] Authenticated offline via local database profile.');
-      const now = Date.now();
-      this.session = {
-        token: `nic-jwt-offline-${this.ledger.sha256(employeeId + now.toString()).substring(0, 32)}`,
-        expiresAt: now + 8 * 60 * 60 * 1000,
-        employeeProfile: {
-          employeeId: matchedUser.id,
-          name: matchedUser.name,
-          role: matchedUser.role,
-          projectCode: 'NH-48-DELHI-JAIPUR',
-          region: 'DELHI-NCR',
-          aadhaarLinked: true,
-          faceEnrolled: true,
-        }
-      };
-      await this._persistSession();
-      return {
-        success: true,
-        profile: this.session.employeeProfile,
-        isOfflineSession: true,
-      };
-    }
+    } catch (_) {}
 
     return {
-      success: false,
-      error: 'No internet connection and no cached session for this employee. Connect to network and log in at least once.',
+      success: true,
+      profile,
+      isOfflineSession: true,
     };
   }
 
@@ -431,6 +439,25 @@ export class DatalakeApiService {
     message: string;
   }> {
     const timestamp = Date.now();
+
+    // Check if attendance is already marked today for this employee
+    const today = new Date().setHours(0, 0, 0, 0);
+    const alreadyMarked = this.offlineQueue.some(
+      e => e.enqueuedAt >= today && e.employeeId === params.employeeId
+    );
+    const ledger = await this.db.getLedger();
+    const ledgerMarked = ledger.some(
+      l => l.timestamp >= today && l.userId === params.employeeId && l.status === 'VERIFIED'
+    );
+    if (alreadyMarked || ledgerMarked) {
+      return {
+        success: false,
+        attendanceId: "",
+        isOfflineRecord: true,
+        status: 'FAILED',
+        message: 'Attendance already marked for today.',
+      };
+    }
 
     // Build the record (matches Datalake 3.0 server contract exactly)
     const record: AttendanceMarkRequest = {
@@ -646,14 +673,29 @@ export class DatalakeApiService {
       }
     } catch (_) {}
 
-    // Offline: check local queue
+    // Offline: check local queue & database ledger
     const today = new Date().setHours(0, 0, 0, 0);
+    const targetId = this.session?.employeeProfile.employeeId;
+
     const todayRecord = this.offlineQueue.find(
-      e => e.enqueuedAt >= today && e.employeeId === this.session?.employeeProfile.employeeId
+      e => e.enqueuedAt >= today && e.employeeId === targetId
     );
+    if (todayRecord) {
+      return {
+        isMarked: true,
+        time: todayRecord.timestamp,
+        isOfflineRecord: true,
+      };
+    }
+
+    const ledger = await this.db.getLedger();
+    const todayLedgerRecord = ledger.find(
+      l => l.timestamp >= today && l.userId === targetId && l.status === 'VERIFIED'
+    );
+
     return {
-      isMarked: !!todayRecord,
-      time: todayRecord?.timestamp,
+      isMarked: !!todayLedgerRecord,
+      time: todayLedgerRecord?.timestamp,
       isOfflineRecord: true,
     };
   }
@@ -713,36 +755,21 @@ export class DatalakeApiService {
     // Simulate NIC server latency
     await new Promise(r => setTimeout(r, 400));
 
-    let name = '';
-    let role = '';
+    const MOCK_EMPLOYEES: Record<string, { password: string; name: string; role: string }> = {
+      'NHAI-2026-001': { password: 'Nhai@2026', name: 'Keshav Kumar Agrawal', role: 'Toll Supervisor' },
+      'NHAI-2026-002': { password: 'Nhai@2026', name: 'Harshiya Sharma',       role: 'Checkpost Inspector' },
+      'NHAI-2026-003': { password: 'Nhai@2026', name: 'Anurag Mohapatra',      role: 'Field Security Lead' },
+      'admin':         { password: 'Admin@2026', name: 'System Administrator', role: 'System Administrator' },
+    };
 
-    if (employeeId === 'admin') {
-      if (password !== 'Admin@2026') {
-        throw new Error('INVALID_CREDENTIALS');
-      }
-      name = 'System Administrator';
-      role = 'System Administrator';
-    } else {
-      // Look up enrolled users in SQLite database
-      const users = await this.db.getEnrolledUsers();
-      const user = users.find(u => u.id === employeeId);
-      if (!user) {
-        // Fallback: If not enrolled yet, simulate authentication for the new employee!
-        if (password === 'Nhai@2026' || password === '') {
-          name = `Officer ${employeeId.replace('NHAI-', '')}`;
-          role = 'Toll Operator';
-        } else {
-          throw new Error('INVALID_CREDENTIALS');
-        }
-      } else {
-        // Check password (use Nhai@2026 as standard fallback password for enrolled profiles)
-        if (password !== '' && password !== 'Nhai@2026') {
-          throw new Error('INVALID_CREDENTIALS');
-        }
-        name = user.name;
-        role = user.role;
-      }
+    const emp = MOCK_EMPLOYEES[employeeId];
+    if (!emp || emp.password !== password) {
+      throw new Error('INVALID_CREDENTIALS');
     }
+
+    // Check if the employee's face is registered locally in SQLite
+    const enrolledUsers = await this.db.getEnrolledUsers();
+    const isEnrolled = enrolledUsers.some(u => u.id === employeeId);
 
     const now = Date.now();
     return {
@@ -751,12 +778,12 @@ export class DatalakeApiService {
       expiresAt: now + 8 * 60 * 60 * 1000, // 8h — Datalake 3.0 shift duration
       employeeProfile: {
         employeeId,
-        name,
-        role,
+        name:          emp.name,
+        role:          emp.role,
         projectCode:   'NH-48-DELHI-JAIPUR',
         region:        'DELHI-NCR',
         aadhaarLinked: true,
-        faceEnrolled:  !!user,
+        faceEnrolled:  isEnrolled,
       }
     };
   }
