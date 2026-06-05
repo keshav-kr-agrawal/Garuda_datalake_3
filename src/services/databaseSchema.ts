@@ -38,7 +38,7 @@ export interface AuditLog {
 }
 
 const USERS_KEY = '@nhai_enrolled_users';
-const LEDGER_KEY = '@nhai_audit_ledger';
+const LEDGER_KEY = '@nhai_cryptographic_ledger';
 
 export class LocalDatabaseService {
   private static instance: LocalDatabaseService;
@@ -205,6 +205,56 @@ export class LocalDatabaseService {
     await storage.setItem(USERS_KEY, JSON.stringify(bulkUsers));
     this.usersCache = bulkUsers;
     console.log('[LocalDatabase] Successfully seeded and cached 20 personnel profiles!');
+  }
+
+  /**
+   * Seeds 10,000 optimized personnel vectors for extreme scale performance benchmark verification.
+   * Includes the target profile NHAI-2026-001 (Keshav Kumar Agrawal) for identical match assertion.
+   */
+  public async seed10kDatabase(): Promise<void> {
+    console.log('[LocalDatabase] Seeding 10,000 mock personnel profiles inside local database cache...');
+    const bulkUsers: EnrolledUser[] = [];
+
+    // 1. Add target user: NHAI-2026-001 (Keshav Kumar Agrawal)
+    const targetRaw = new Float32Array(192);
+    let targetSumSq = 0;
+    for (let i = 0; i < 192; i++) {
+      targetRaw[i] = Math.sin(i) * Math.cos(i * 1.5);
+      targetSumSq += targetRaw[i] * targetRaw[i];
+    }
+    const targetMag = Math.sqrt(targetSumSq);
+    const targetEmbedding = Array.from(targetRaw).map(v => targetMag === 0 ? 0 : v / targetMag);
+
+    bulkUsers.push({
+      id: 'NHAI-2026-001',
+      name: 'Keshav Kumar Agrawal',
+      role: 'System Administrator',
+      embedding: targetEmbedding,
+    });
+
+    // 2. Generate 9,999 other users
+    for (let idx = 2; idx <= 10000; idx++) {
+      const id = `NHAI-MOCK-${idx}`;
+      const name = `Field Operator ${idx}`;
+      const role = idx % 2 === 0 ? 'Toll Operator' : 'Security Guard';
+
+      const rawVector = new Float32Array(192);
+      let sumSquares = 0;
+      for (let j = 0; j < 192; j++) {
+        // Deterministic generation to avoid slow Math.random() loops
+        rawVector[j] = Math.sin(idx * 0.72 + j) * Math.cos(j * 0.95);
+        sumSquares += rawVector[j] * rawVector[j];
+      }
+
+      const magnitude = Math.sqrt(sumSquares);
+      const embedding = Array.from(rawVector).map(v => magnitude === 0 ? 0 : v / magnitude);
+
+      bulkUsers.push({ id, name, role, embedding });
+    }
+
+    await storage.setItem(USERS_KEY, JSON.stringify(bulkUsers));
+    this.usersCache = bulkUsers;
+    console.log('[LocalDatabase] Successfully seeded and cached 10,000 personnel profiles!');
   }
 
   public async seedDatabaseIfEmpty(): Promise<void> {

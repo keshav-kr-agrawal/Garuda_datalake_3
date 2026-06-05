@@ -44,7 +44,7 @@ export const ENROLLMENT_STEPS: EnrollmentStepConfig[] = [
     arrow: 'up',
     requiredFrames: 20,
     poseCheck: (yaw, pitch, _roll) =>
-      pitch < -12 && Math.abs(yaw) < 15,
+      pitch < -8 && Math.abs(yaw) < 15,
   },
   {
     step: 'LOOK_DOWN',
@@ -53,7 +53,7 @@ export const ENROLLMENT_STEPS: EnrollmentStepConfig[] = [
     arrow: 'down',
     requiredFrames: 20,
     poseCheck: (yaw, pitch, _roll) =>
-      pitch > 12 && Math.abs(yaw) < 15,
+      pitch > 8 && Math.abs(yaw) < 15,
   },
   {
     step: 'TURN_LEFT',
@@ -131,9 +131,9 @@ export class LivenessMathService {
   private activeChallenge: LivenessChallenge | null = null;
 
   // Grace period: give users time to read the challenge instruction
-  // ~90 frames at 30fps ≈ 3 seconds before evaluating
+  // ~15 frames at 30fps ≈ 0.5 seconds before evaluating
   private challengeGraceFrames = 0;
-  private readonly CHALLENGE_GRACE_LIMIT = 90;
+  private readonly CHALLENGE_GRACE_LIMIT = 15;
 
   // ─── Enrollment state ──────────────────────────────────────────────────────
   private enrollmentStepIdx = 0;

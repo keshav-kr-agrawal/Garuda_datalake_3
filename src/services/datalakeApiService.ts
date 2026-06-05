@@ -154,7 +154,7 @@ export interface TokenSession {
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
 const STORAGE = {
   SESSION:      '@dl3_session',          // Encrypted session token
-  OFFLINE_Q:   '@dl3_offline_queue',    // Pending attendance records
+  OFFLINE_Q:   '@nhai_offline_queue',    // Pending attendance records
   DEVICE_ID:   '@dl3_device_id',
   ROSTER_SYNC: '@dl3_roster_synced_at',
 };
@@ -727,14 +727,21 @@ export class DatalakeApiService {
       const users = await this.db.getEnrolledUsers();
       const user = users.find(u => u.id === employeeId);
       if (!user) {
-        throw new Error('INVALID_CREDENTIALS');
+        // Fallback: If not enrolled yet, simulate authentication for the new employee!
+        if (password === 'Nhai@2026' || password === '') {
+          name = `Officer ${employeeId.replace('NHAI-', '')}`;
+          role = 'Toll Operator';
+        } else {
+          throw new Error('INVALID_CREDENTIALS');
+        }
+      } else {
+        // Check password (use Nhai@2026 as standard fallback password for enrolled profiles)
+        if (password !== '' && password !== 'Nhai@2026') {
+          throw new Error('INVALID_CREDENTIALS');
+        }
+        name = user.name;
+        role = user.role;
       }
-      // Check password (use Nhai@2026 as standard fallback password for enrolled profiles)
-      if (password !== '' && password !== 'Nhai@2026') {
-        throw new Error('INVALID_CREDENTIALS');
-      }
-      name = user.name;
-      role = user.role;
     }
 
     const now = Date.now();
@@ -749,7 +756,7 @@ export class DatalakeApiService {
         projectCode:   'NH-48-DELHI-JAIPUR',
         region:        'DELHI-NCR',
         aadhaarLinked: true,
-        faceEnrolled:  true,
+        faceEnrolled:  !!user,
       }
     };
   }

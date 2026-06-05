@@ -35,6 +35,13 @@ export const DesktopWebDashboard: React.FC = () => {
   // Navigation tabs
   const [activeTab, setActiveTab] = useState<'terminal' | 'registry' | 'ledger' | 'sync'>('terminal');
 
+  // GPS coordinates state
+  const [gpsLocation, setGpsLocation] = useState<{ latitude: number; longitude: number; accuracy: number }>({
+    latitude: 28.6139,
+    longitude: 77.2090,
+    accuracy: 5
+  });
+
   // Attendance queue (the real store — separate from the cryptographic ledger)
   const [attendanceQueue, setAttendanceQueue] = useState<OfflineQueueEntry[]>([]);
 
@@ -172,6 +179,26 @@ export const DesktopWebDashboard: React.FC = () => {
       datalakeSyncService.destroy();
     };
   }, []);
+
+  // Track real GPS location via browser API
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setGpsLocation({
+            latitude: Number(position.coords.latitude.toFixed(6)),
+            longitude: Number(position.coords.longitude.toFixed(6)),
+            accuracy: Math.round(position.coords.accuracy || 5)
+          });
+          console.log('[Geolocation] Acquired real coordinates:', position.coords.latitude, position.coords.longitude);
+        },
+        (err) => {
+          console.warn('[Geolocation] Permission or acquisition failed. Using default NHAI HQ.', err);
+        },
+        { enableHighAccuracy: true, timeout: 8000 }
+      );
+    }
+  }, [streamActive]);
 
   // Sync database items count
   const refreshUsers = async () => {
@@ -596,9 +623,9 @@ export const DesktopWebDashboard: React.FC = () => {
         // Queue log entry offline via Datalake API
         await datalakeSyncService.markAttendance({
           employeeId: matchResult.user!.id,
-          gpsLatitude: 28.6139,
-          gpsLongitude: 77.2090,
-          gpsAccuracyMeters: 4.2,
+          gpsLatitude: gpsLocation.latitude,
+          gpsLongitude: gpsLocation.longitude,
+          gpsAccuracyMeters: gpsLocation.accuracy,
           matchConfidence: scaledSim,
           livenessScore: 1.0
         });
@@ -950,6 +977,173 @@ export const DesktopWebDashboard: React.FC = () => {
   const renderTabContent = () => {
     switch (activeTab) {
       case 'terminal':
+        if (!isAdmin && isEnrolling) {
+          return (
+            <div className="dashboard-grid">
+              {/* Left Column: Directory / Enrollment State Panel */}
+              <div className="card registry-card" style={{ flex: '1', minWidth: '0' }}>
+                <div className="card-header">
+                  <h3>Guided Biometric Onboarding</h3>
+                </div>
+                <div style={{ padding: '20px' }}>
+                  <p style={{ marginBottom: '16px', color: 'var(--text-slate)', fontSize: '14px', lineHeight: '1.4' }}>
+                    Hello <strong>{currentUserProfile?.name || 'Officer'}</strong>. Your face profile is not registered in the local offline database yet. Let's start a 6-stage head movement scan to register your face model.
+                  </p>
+                  <div className="enrollment-panel" style={{ background: 'transparent', padding: 0, boxShadow: 'none', border: 'none' }}>
+                    <div className="enrollment-guidance">
+                      <p className="enroll-prompt" style={{ fontSize: '15px', fontWeight: 'bold', color: 'var(--navy-primary)', minHeight: '40px' }}>{enrollProgressMsg}</p>
+                      {enrollFrameResult && (
+                        <div className="enroll-step-progress" style={{ margin: '14px 0' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px' }}>
+                            <span>Step: <strong>{enrollFrameResult.currentStep}</strong></span>
+                            <span><strong>{Math.round(enrollFrameResult.overallProgress * 100)}% Complete</strong></span>
+                          </div>
+                          <div className="progress-bar-sm" style={{ marginTop: '6px' }}>
+                            <div className="progress-fill" style={{ width: `${enrollFrameResult.overallProgress * 100}%` }} />
+                          </div>
+                        </div>
+                      )}
+                      {orchestratorState !== 'IDLE' && (
+                        <div className="enroll-gallery" style={{ marginTop: '16px' }}>
+                          {ENROLLMENT_STEPS.map(stepConfig => {
+                            const photoObj = capturedStepPhotos.find(p => p.step === stepConfig.step);
+                            const label = stepConfig.label;
+                            
+                            return (
+                              <div key={stepConfig.step} className="enroll-gallery-item">
+                                <div style={{
+                                  width: '32px',
+                                  height: '32px',
+                                  borderRadius: '50%',
+                                  border: photoObj ? '2px solid var(--navy-primary)' : '2px dashed var(--border-color)',
+                                  backgroundColor: photoObj ? 'transparent' : 'var(--white)',
+                                  display: 'flex',
+                                  justifyContent: 'center',
+                                  alignItems: 'center',
+                                  overflow: 'hidden',
+                                  position: 'relative'
+                                }}>
+                                  {photoObj ? (
+                                    <>
+                                      <img src={photoObj.photo} alt={label} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                      <div style={{
+                                        position: 'absolute',
+                                        bottom: 0,
+                                        right: 0,
+                                        background: 'var(--navy-primary)',
+                                        color: 'var(--white)',
+                                        borderRadius: '50%',
+                                        width: '10px',
+                                        height: '10px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        fontSize: '6px',
+                                        fontWeight: 'bold'
+                                      }}>✓</div>
+                                    </>
+                                  ) : (
+                                    <span style={{ fontSize: '11px', color: 'var(--navy-light)', fontWeight: 'bold' }}>
+                                      {stepConfig.arrow === 'up' && '↑'}
+                                      {stepConfig.arrow === 'down' && '↓'}
+                                      {stepConfig.arrow === 'left' && '←'}
+                                      {stepConfig.arrow === 'right' && '→'}
+                                      {stepConfig.arrow === 'tilt-left' && '⤾'}
+                                      {stepConfig.arrow === 'none' && '👤'}
+                                    </span>
+                                  )}
+                                </div>
+                                <span style={{ 
+                                  fontSize: '8px', 
+                                  fontWeight: photoObj ? 'bold' : 'normal',
+                                  color: photoObj ? 'var(--navy-primary)' : 'var(--text-gray)', 
+                                  textAlign: 'center',
+                                  whiteSpace: 'nowrap'
+                                }}>
+                                  {stepConfig.step === 'LOOK_CENTER' ? 'Center' : 
+                                   stepConfig.step === 'LOOK_UP' ? 'Up' : 
+                                   stepConfig.step === 'LOOK_DOWN' ? 'Down' : 
+                                   stepConfig.step === 'TURN_LEFT' ? 'Left' : 
+                                   stepConfig.step === 'TURN_RIGHT' ? 'Right' : 'Tilt'}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="enroll-buttons" style={{ marginTop: '20px' }}>
+                      <button onClick={startEnrollmentWizard} className="btn-primary" style={{ height: '42px', width: '100%' }}>
+                        {orchestratorState === 'ENROLLING' ? 'Scanning...' : 'Start 6-Step Scan'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Column: Camera Viewport */}
+              <div className="card terminal-card" style={{ flex: '1.2', minWidth: '0' }}>
+                <div className="card-header">
+                  <h3>Guided Onboarding Camera</h3>
+                  <div className="clahe-toggle">
+                    <span className="toggle-txt">CLAHE Correction</span>
+                    <label className="switch-sm">
+                      <input 
+                        type="checkbox" 
+                        checked={claheEnabled} 
+                        onChange={(e) => setClaheEnabled(e.target.checked)} 
+                      />
+                      <span className="slider round"></span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="camera-viewport">
+                  <div className="video-relative" style={{ display: streamActive ? 'block' : 'none' }}>
+                    <video 
+                      ref={videoRef} 
+                      autoPlay 
+                      playsInline 
+                      muted 
+                      className="hidden-video"
+                    />
+                    <canvas 
+                      ref={meshCanvasRef} 
+                      className="live-canvas"
+                      width="480"
+                      height="480"
+                    />
+                    <canvas 
+                      ref={canvasRef} 
+                      style={{ display: 'none' }}
+                      width="112"
+                      height="112"
+                    />
+                  </div>
+                  {!streamActive && (
+                    <div className="camera-offline">
+                      <span className="camera-icon">👁️</span>
+                      <button onClick={startWebcam} className="btn-camera-toggle">
+                        {mpLoading ? 'Loading libraries...' : 'Activate Onboarding Camera'}
+                      </button>
+                      {streamError && <p className="error-txt">{streamError}</p>}
+                    </div>
+                  )}
+                </div>
+
+                {streamActive && (
+                  <div className="camera-actions">
+                    <button onClick={stopWebcam} className="btn-camera-close">
+                      Close Camera Feed
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        }
+
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
             <div className="dashboard-grid">
@@ -1059,7 +1253,7 @@ export const DesktopWebDashboard: React.FC = () => {
                     <p className="console-status-msg">{challengeState.message}</p>
                   </div>
 
-                  {streamActive && challengeState.currentChallenge !== 'SUCCESS' && challengeState.currentChallenge !== 'FAILED' && (
+                  {isAdmin && streamActive && challengeState.currentChallenge !== 'SUCCESS' && challengeState.currentChallenge !== 'FAILED' && (
                     <div className="simulator-overrides">
                       <h4>Judge Telemetry Simulator</h4>
                       <p className="override-desc">Click below to simulate head movement/blink gestures:</p>
@@ -3193,25 +3387,6 @@ export const DesktopWebDashboard: React.FC = () => {
                         </div>
                       </div>
 
-                      {/* Overrides */}
-                      <div className="simulator-overrides" style={{ marginBottom: '16px' }}>
-                        <div className="override-buttons">
-                          <button 
-                            onClick={() => handleSimulateChallenge('BLINK')}
-                            disabled={challengeState.currentChallenge !== 'BLINK'}
-                            className="btn-sim"
-                          >
-                            Simulate Blink
-                          </button>
-                          <button 
-                            onClick={() => handleSimulateChallenge('SMILE')}
-                            disabled={challengeState.currentChallenge !== 'SMILE'}
-                            className="btn-sim"
-                          >
-                            Simulate Smile
-                          </button>
-                        </div>
-                      </div>
 
                       {verificationSuccess !== null && (
                         <div className={`verification-result-card ${verificationSuccess ? 'verified' : 'denied'}`} style={{ marginBottom: '16px' }}>
@@ -3259,11 +3434,25 @@ export const DesktopWebDashboard: React.FC = () => {
                             required
                           />
                         </div>
-                        
+                        <div style={{ fontSize: '11px', color: 'var(--text-gray)', marginBottom: '14px', fontStyle: 'italic', textAlign: 'center' }}>
+                          Demo Login: <strong>admin / Admin@2026</strong> (Admin) or <strong>NHAI-USER-001 / Nhai@2026</strong> (Staff)
+                        </div>
+
                         <div className="login-actions-row">
-                          <button type="submit" className="btn-login-submit" style={{ width: '100%', height: '48px', marginTop: '8px' }}>
+                          <button type="submit" className="btn-login-submit" style={{ flex: 1, height: '48px', marginTop: 0 }}>
                             {isOfflineTerminal ? "Open Terminal Gate" : "Login using OTP"}
                           </button>
+                          {!isOfflineTerminal && (
+                            <button 
+                              type="button" 
+                              onClick={handleFaceLoginClick} 
+                              className="btn-face-login"
+                              style={{ width: '50px', height: '46px', margin: 0, padding: 0 }}
+                              title="Login using Face ID"
+                            >
+                              👤
+                            </button>
+                          )}
                         </div>
                       </form>
                     </>
@@ -3327,33 +3516,35 @@ export const DesktopWebDashboard: React.FC = () => {
           </header>
           
           <div className="app-body">
-            <nav className="app-tabs">
-              <button 
-                className={`tab-btn ${activeTab === 'terminal' ? 'active' : ''}`}
-                onClick={() => setActiveTab('terminal')}
-              >
-                👁️ Verification
-              </button>
+            {isAdmin && (
+              <nav className="app-tabs">
+                <button 
+                  className={`tab-btn ${activeTab === 'terminal' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('terminal')}
+                >
+                  👁️ Verification
+                </button>
 
-              <button 
-                className={`tab-btn ${activeTab === 'registry' ? 'active' : ''}`}
-                onClick={() => { setActiveTab('registry'); setIsEnrolling(false); }}
-              >
-                👥 Register Staff
-              </button>
-              <button 
-                className={`tab-btn ${activeTab === 'ledger' ? 'active' : ''}`}
-                onClick={() => setActiveTab('ledger')}
-              >
-                🔗 Ledger
-              </button>
-              <button 
-                className={`tab-btn ${activeTab === 'sync' ? 'active' : ''}`}
-                onClick={() => setActiveTab('sync')}
-              >
-                📡 Cloud Sync
-              </button>
-            </nav>
+                <button 
+                  className={`tab-btn ${activeTab === 'registry' ? 'active' : ''}`}
+                  onClick={() => { setActiveTab('registry'); setIsEnrolling(false); }}
+                >
+                  👥 Register Staff
+                </button>
+                <button 
+                  className={`tab-btn ${activeTab === 'ledger' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('ledger')}
+                >
+                  🔗 Ledger
+                </button>
+                <button 
+                  className={`tab-btn ${activeTab === 'sync' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('sync')}
+                >
+                  📡 Cloud Sync
+                </button>
+              </nav>
+            )}
             
             <main className="tab-viewport">
               {renderTabContent()}
