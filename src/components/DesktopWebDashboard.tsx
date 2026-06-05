@@ -110,6 +110,7 @@ export const DesktopWebDashboard: React.FC = () => {
   const [verificationStep, setVerificationStep] = useState<'IDLE' | 'MATCHING' | 'LIVENESS' | 'SUCCESS' | 'FAILED'>('IDLE');
   const verificationStepRef = useRef<'IDLE' | 'MATCHING' | 'LIVENESS' | 'SUCCESS' | 'FAILED'>('IDLE');
   const isMatchingInProgressRef = useRef(false);
+  const matchingAttemptsRef = useRef(0);
 
   // Registry & Roster
   const [usersList, setUsersList] = useState<EnrolledUser[]>([]);
@@ -362,9 +363,17 @@ export const DesktopWebDashboard: React.FC = () => {
     setStreamError(null);
     setMatchedProfile(null);
     setVerificationSuccess(null);
-    setVerificationStep('MATCHING');
-    verificationStepRef.current = 'MATCHING';
+    
+    if (activeTab === 'registry' || isEnrolling) {
+      setVerificationStep('IDLE');
+      verificationStepRef.current = 'IDLE';
+    } else {
+      setVerificationStep('MATCHING');
+      verificationStepRef.current = 'MATCHING';
+    }
+    
     isMatchingInProgressRef.current = false;
+    matchingAttemptsRef.current = 0;
     setSearchLatency(null);
 
     const mpGlobal = window as any;
@@ -708,30 +717,47 @@ export const DesktopWebDashboard: React.FC = () => {
         message: `Match Succeeded! Starting Step B (Liveness). Please ${shuffled[0]}`,
       });
     } else {
-      verificationStepRef.current = 'FAILED';
-      setVerificationStep('FAILED');
-
-      let failMsg = 'Biometric mismatch. Access Refused.';
-      const enrolledCount = (await dbService.getEnrolledUsers()).length;
-      if (isCommonTerminal || !isAdmin) {
-        failMsg = 'Face not recognized. Ask admin to enroll your face.';
-      } else if (enrolledCount === 0) {
-        failMsg = 'No enrolled faces in database. Register a face first via the Registry tab.';
-      } else if (!matchResult.user) {
-        failMsg = `No matching face found among ${enrolledCount} enrolled profile(s). Similarity: ${(matchResult.similarity * 100).toFixed(1)}%`;
-      } else if (matchResult.similarity < 0.72) {
-        failMsg = `Weak match (${(matchResult.similarity * 100).toFixed(1)}%). Try better lighting or re-enroll.`;
+      // Increment attempt count on mismatch
+      matchingAttemptsRef.current += 1;
+      
+      if (matchingAttemptsRef.current < 5) {
+        // Update user status log to show attempt number
+        setChallengeState(prev => ({
+          ...prev,
+          message: `Scanning... Face unrecognized (Attempt ${matchingAttemptsRef.current}/5). Adjust face/lighting.`
+        }));
+        
+        // Wait 800ms before clearing flag to scan again (prevents CPU spamming)
+        setTimeout(() => {
+          isMatchingInProgressRef.current = false;
+        }, 800);
       } else {
-        failMsg = `Face matched ${matchResult.user.name} but access restricted to your profile only.`;
-      }
+        // Max attempts reached, set to FAILED and shut down webcam
+        verificationStepRef.current = 'FAILED';
+        setVerificationStep('FAILED');
 
-      setChallengeState(prev => ({
-        ...prev,
-        currentChallenge: 'FAILED',
-        message: failMsg
-      }));
-      setVerificationSuccess(false);
-      stopWebcam();
+        let failMsg = 'Biometric mismatch. Access Refused.';
+        const enrolledCount = (await dbService.getEnrolledUsers()).length;
+        if (isCommonTerminal || !isAdmin) {
+          failMsg = 'Face not recognized. Ask admin to enroll your face.';
+        } else if (enrolledCount === 0) {
+          failMsg = 'No enrolled faces in database. Register a face first via the Registry tab.';
+        } else if (!matchResult.user) {
+          failMsg = `No matching face found among ${enrolledCount} enrolled profile(s). Similarity: ${(matchResult.similarity * 100).toFixed(1)}%`;
+        } else if (matchResult.similarity < 0.72) {
+          failMsg = `Weak match (${(matchResult.similarity * 100).toFixed(1)}%). Try better lighting or re-enroll.`;
+        } else {
+          failMsg = `Face matched ${matchResult.user.name} but access restricted to your profile only.`;
+        }
+
+        setChallengeState(prev => ({
+          ...prev,
+          currentChallenge: 'FAILED',
+          message: failMsg
+        }));
+        setVerificationSuccess(false);
+        stopWebcam();
+      }
     }
   };
 
